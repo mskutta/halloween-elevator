@@ -17,9 +17,10 @@
 #include <SPI.h>
 
 /* Constants */
-const char* hostname = "elevator-controller";
+const char* espname = "elev-ctrl";
 const char* ssid = "skutta-net"; // network SSID (name)
 const char* password = "ymnUWpdPpP8V"; // network password
+const unsigned int oscPort = 53000;
 
 /* Variables */
 enum class ElevatorState {
@@ -82,13 +83,15 @@ Adafruit_SSD1306 display(OLED_RESET);
 #error("Height incorrect, please fix Adafruit_SSD1306.h!");
 #endif
 
+/* WIFI */
+char hostname[17] = {0};
+
 /* OSC */
-WiFiUDP Udp;                            // A UDP instance to let us send and receive packets over UDP
-const IPAddress frontDoorIp(10,81,95,107); // remote IP of the target device   
-const unsigned int frontDoorPort = 53000; // remote port of the target device where the NodeMCU sends OSC to
-const unsigned int localPort = 53000;    // local port to listen for UDP packets at the NodeMCU (another device must send OSC messages to this port)
-const IPAddress rearDoorIp(10,81,95,107); // remote IP of the target device   
-const unsigned int rearDoorPort = 53000; // remote port of the target device where the NodeMCU sends OSC to
+WiFiUDP Udp;
+IPAddress frontDoorIp;
+unsigned int frontDoorPort;
+IPAddress rearDoorIp;
+unsigned int rearDoorPort;
 
 void setup()
 {
@@ -106,6 +109,7 @@ void setup()
   display.setTextColor(WHITE);
 
   /* WiFi */
+  sprintf(hostname, "%s-%06X", espname, ESP.getChipId());
   Serial.print(F("Connecting to "));
   Serial.println(ssid);
   WiFi.mode(WIFI_STA);
@@ -126,25 +130,18 @@ void setup()
   Serial.print(F("Connected, IP address: "));
   Serial.println(WiFi.localIP());
 
-  display.setCursor(0,24);
+  display.setCursor(0,0);
+  display.print("MAC:");
+  display.print(WiFi.macAddress());
+  display.setCursor(0,8);
+  display.print(hostname);
+  display.setCursor(0,16);
   display.print("IP: ");
   display.print(WiFi.localIP());
   display.display();
 
   /* OTA */
-  // Port defaults to 8266
-  // ArduinoOTA.setPort(8266);
-
-  // Hostname defaults to esp8266-[ChipID]
   ArduinoOTA.setHostname(hostname);
-
-  // No authentication by default
-  // ArduinoOTA.setPassword("admin");
-
-  // Password can be set with it's md5 value as well
-  // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
-  // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
-
   ArduinoOTA.onStart([]() {
     String type;
     if (ArduinoOTA.getCommand() == U_FLASH) {
@@ -180,15 +177,41 @@ void setup()
 
   /* mDNS */
   // Initialization happens inside ArduinoOTA;
-  MDNS.addService("osc", "udp", localPort);
+  MDNS.addService(espname, "udp", oscPort);
 
   /* UDP */
   Serial.println(F("Starting UDP"));
-  Udp.begin(localPort);
+  Udp.begin(oscPort);
   Serial.print(F("Local port: "));
   Serial.println(Udp.localPort());
 
-  //pinMode(LED_BUILTIN, OUTPUT);
+  // Discover Elevator Front Door
+  while (MDNS.queryService("elev-frnt-door", "udp") == 0) {
+    Serial.println(F("mDNS Waiting for elev-frnt-door..."));
+    delay(1000);
+  }
+  frontDoorIp = MDNS.IP(0);
+  frontDoorPort = MDNS.port(0);
+
+  Serial.println(F("Elevator front door found"));
+  Serial.print(F("IP: "));
+  Serial.println(frontDoorIp);
+  Serial.print(F("Port: "));
+  Serial.println(frontDoorPort);
+
+  // Discover Elevator Rear Door
+//  while (MDNS.queryService("elev-rear-door", "udp") == 0) {
+//    Serial.println(F("mDNS Waiting for elev-rear-door..."));
+//    delay(1000);
+//  }
+//  rearDoorIp = MDNS.IP(0);
+//  rearDoorPort = MDNS.port(0);
+//
+//  Serial.println(F("Elevator rear door found"));
+//  Serial.print(F("IP: "));
+//  Serial.println(rearDoorIp);
+//  Serial.print(F("Port: "));
+//  Serial.println(rearDoorPort);
 }
 
 void loop() {
