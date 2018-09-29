@@ -16,52 +16,31 @@
 #include <Adafruit_SSD1306.h>
 #include <SPI.h>
 
+// Port Expander
+#include <Adafruit_MCP23017.h>
+
 /* Constants */
-const char* espname = "elev-ctrl";
-const char* ssid = "skutta-net"; // network SSID (name)
-const char* password = "ymnUWpdPpP8V"; // network password
-const unsigned int oscPort = 53000;
+const char* ESP_NAME = "elev-ctrl";
+const char* SSID = "skutta-net"; // network SSID (name)
+const char* PASSWORD = "ymnUWpdPpP8V"; // network password
+const unsigned int OSC_PORT = 53000;
 
 /* Variables */
-enum class ElevatorState {
-  Unknown,
-  Stopped,
-  Moving
-};
-static const char *ElevatorStateString[] = {
-    "Unknown", "Stopped", "Moving"
-};
+enum class ElevatorState {Unknown, Stopped, Moving};
+static const char *ElevatorStateString[] = {"Unknown", "Stopped", "Moving"};
 ElevatorState elevatorState = ElevatorState::Stopped;
 
-enum class ElevatorDirection {
-  Unknown,
-  Up,
-  Down
-};
-static const char *ElevatorDirectionString[] = {
-    "Unknown", "Up", "Down"
-};
+enum class ElevatorDirection {Unknown, Up, Down};
+static const char *ElevatorDirectionString[] = {"Unknown", "Up", "Down"};
 ElevatorDirection elevatorDirection = ElevatorDirection::Unknown;
 
-enum class CallState {
-  None,
-  Up,
-  Down
-};
-static const char *CallStateString[] = {
-    "None", "Up", "Down"
-};
+enum class CallState {None, Up, Down};
+static const char *CallStateString[] = {"None", "Up", "Down"};
 CallState callState = CallState::None;
 CallState lastCallState = CallState::None;
 
-enum class DoorState {
-  Unknown,
-  Open,
-  Closed
-};
-static const char *DoorStateString[] = {
-    "Unknown", "Open", "Closed"
-};
+enum class DoorState {Unknown, Open, Closed};
+static const char *DoorStateString[] = {"Unknown", "Open", "Closed"};
 DoorState doorState = DoorState::Unknown;
 
 unsigned long startTime;
@@ -93,6 +72,10 @@ unsigned int frontDoorPort;
 IPAddress rearDoorIp;
 unsigned int rearDoorPort;
 
+/* Port Expander */
+Adafruit_MCP23017 mcp0;
+Adafruit_MCP23017 mcp1;
+
 void setup()
 {
   Serial.begin(74880);
@@ -109,12 +92,12 @@ void setup()
   display.setTextColor(WHITE);
 
   /* WiFi */
-  sprintf(hostname, "%s-%06X", espname, ESP.getChipId());
+  sprintf(hostname, "%s-%06X", ESP_NAME, ESP.getChipId());
   Serial.print(F("Connecting to "));
-  Serial.println(ssid);
+  Serial.println(SSID);
   WiFi.mode(WIFI_STA);
   WiFi.hostname(hostname);
-  WiFi.begin(ssid, password);
+  WiFi.begin(SSID, PASSWORD);
   while (WiFi.waitForConnectResult() != WL_CONNECTED) {
     Serial.println("Connection Failed! Rebooting...");
     delay(5000);
@@ -177,11 +160,11 @@ void setup()
 
   /* mDNS */
   // Initialization happens inside ArduinoOTA;
-  MDNS.addService(espname, "udp", oscPort);
+  MDNS.addService(ESP_NAME, "udp", OSC_PORT);
 
   /* UDP */
   Serial.println(F("Starting UDP"));
-  Udp.begin(oscPort);
+  Udp.begin(OSC_PORT);
   Serial.print(F("Local port: "));
   Serial.println(Udp.localPort());
 
@@ -212,6 +195,37 @@ void setup()
 //  Serial.println(rearDoorIp);
 //  Serial.print(F("Port: "));
 //  Serial.println(rearDoorPort);
+
+  /* Poer Expander (MCP23017) */
+  mcp0.begin(0); // 0x20
+  mcp1.begin(1); // 0x21
+
+  // Floor indicator
+  mcp0.pinMode(0, OUTPUT); // UP
+  mcp0.pinMode(1, OUTPUT); // B
+  mcp0.pinMode(2, OUTPUT); // 1
+  mcp0.pinMode(3, OUTPUT); // 2
+  mcp0.pinMode(4, OUTPUT); // 3
+  mcp0.pinMode(5, OUTPUT); // 4
+  mcp0.pinMode(6, OUTPUT); // 5
+  mcp0.pinMode(7, OUTPUT); // 6 Note: cannot be used as input due to bug.
+  mcp0.pinMode(8, OUTPUT); // 7
+  mcp0.pinMode(9, OUTPUT); // 8
+  mcp0.pinMode(10, OUTPUT); // 9
+  mcp0.pinMode(11, OUTPUT); // 10
+  mcp0.pinMode(12, OUTPUT); // 11
+  mcp0.pinMode(13, OUTPUT); // 12
+  mcp0.pinMode(14, OUTPUT); // 13
+  mcp0.pinMode(15, OUTPUT); // DOWN Note: cannot be used as input due to bug.
+
+  // Button Panel LEDs
+  mcp1.pinMode(0, OUTPUT); // B
+  mcp1.pinMode(1, OUTPUT); // 1
+  mcp1.pinMode(2, OUTPUT); // 13
+
+  // Button Panel Buttons
+  mcp1.pinMode(3, INPUT); // Reopen
+  mcp1.pullUp(3, HIGH);
 }
 
 void loop() {
@@ -219,6 +233,9 @@ void loop() {
 
   ArduinoOTA.handle();
   receiveOSC();
+
+  // Read buttons
+  boolean reopenPressed = mcp1.digitalRead(3); // Reopen
 
   if (elevatorState == ElevatorState::Stopped) {
     if (currentFloor == 0) {
@@ -229,6 +246,11 @@ void loop() {
         endTime = currentTime + 20000;
         startFloor = 0;
         endFloor = 1;
+      } 
+      else if (doorState == DoorState::Open) {
+        if (reopenPressed == true) {
+          reopenRearDoor();
+        }
       }
     }
     else if (currentFloor == 1) {
@@ -257,6 +279,11 @@ void loop() {
           openFrontDoor();
         }
       }
+      else if (doorState == DoorState::Open) {
+        if (reopenPressed == true) {
+          reopenFrontDoor();
+        }
+      }
     }
     else if (currentFloor == 13) {
       if (doorState == DoorState::Closed) {
@@ -267,10 +294,15 @@ void loop() {
         startFloor = 13;
         endFloor = 1;
       }
+      else if (doorState == DoorState::Open) {
+        if (reopenPressed == true) {
+          reopenRearDoor();
+        }
+      }
     }
   }
   else if (elevatorState == ElevatorState::Moving) {
-    currentFloor = map(currentTime, startTime, endTime, startFloor, endFloor);
+    currentFloor = round(map(currentTime, startTime, endTime, startFloor, endFloor));
 
     if (currentTime >= endTime) {
       Serial.println(F("Floor reached, stop"));
@@ -295,8 +327,9 @@ void loop() {
     lastCallState = callState;
   }
 
-  // TODO: display direction indicator
-  // TODO: display floor indicator
+  updateButtonPannel();
+  updateDirectionIndicator();
+  updateFloorIndicator();
 }
 
 void receiveOSC(){
@@ -334,45 +367,88 @@ void oscRearDoorClosed(OSCMessage &msg, int addrOffset){
   Serial.println(F("rcv: reardoorclosed"));
 }
 
-
-
 void openFrontDoor() {
   doorState = DoorState::Open;
+  OSCMessage openDoorMsg("/elevator/opendoor");
+  if (elevatorDirection == ElevatorDirection::Up) {
+    openDoorMsg.add("up");
+  }
+  else if (elevatorDirection == ElevatorDirection::Up) {
+    openDoorMsg.add("down");
+  }
+  sendFrontDoorOSCMessage(openDoorMsg);
+}
 
-  OSCMessage msgOut("/elevator/opendoor");
-  Udp.beginPacket(frontDoorIp, frontDoorPort);
-  msgOut.send(Udp);
-  Udp.endPacket();
-  msgOut.empty();
-  
-  Serial.println(F("send front: opendoor"));
+void reopenFrontDoor() {
+  doorState = DoorState::Open;
+  OSCMessage msgOut("/elevator/reopendoor");
+  sendFrontDoorOSCMessage(msgOut);
 }
 
 void openRearDoor() {
   doorState = DoorState::Open;
-
   OSCMessage msgOut("/elevator/opendoor");
-  Udp.beginPacket(rearDoorIp, rearDoorPort);
-  msgOut.send(Udp);
-  Udp.endPacket();
-  msgOut.empty();
+  sendRearDoorOSCMessage(msgOut);
+}
 
-  Serial.println(F("send rear: opendoor"));
+void reopenRearDoor() {
+  doorState = DoorState::Open;
+  OSCMessage msgOut("/elevator/reopendoor");
+  sendRearDoorOSCMessage(msgOut);
 }
 
 void updateCallAcceptanceLights() {
-
   OSCMessage upOSCMessage("/elevator/callupacceptancelight");
   upOSCMessage.add((callState == CallState::Up) ? 1 : 0);
-  Udp.beginPacket(frontDoorIp, frontDoorPort);
-  upOSCMessage.send(Udp);
-  Udp.endPacket();
-  upOSCMessage.empty();
+  sendFrontDoorOSCMessage(upOSCMessage);
 
   OSCMessage downOSCMessage("/elevator/calldownacceptancelight");
   downOSCMessage.add((callState == CallState::Down) ? 1 : 0);
+  sendFrontDoorOSCMessage(downOSCMessage);
+}
+
+void sendFrontDoorOSCMessage(OSCMessage &msg) {
+  Serial.println(F("OSC: send front")); // TODO: display message details
+  
   Udp.beginPacket(frontDoorIp, frontDoorPort);
-  downOSCMessage.send(Udp);
+  msg.send(Udp);
   Udp.endPacket();
-  downOSCMessage.empty();
+  msg.empty();
+}
+
+void sendRearDoorOSCMessage(OSCMessage &msg) {
+  Serial.println(F("OSC: send rear")); // TODO: display message details
+  
+  Udp.beginPacket(rearDoorIp, rearDoorPort);
+  msg.send(Udp);
+  Udp.endPacket();
+  msg.empty();
+}
+
+void updateButtonPannel() {
+  mcp1.digitalWrite(0, (endFloor == 0) ? HIGH : LOW); // B
+  mcp1.digitalWrite(0, (endFloor == 1) ? HIGH : LOW); // 1
+  mcp1.digitalWrite(0, (endFloor == 13) ? HIGH : LOW); // 13
+}
+
+void updateDirectionIndicator() {
+  mcp0.digitalWrite(0, (elevatorDirection == ElevatorDirection::Up) ? HIGH : LOW); // UP
+  mcp0.digitalWrite(15, (elevatorDirection == ElevatorDirection::Down) ? HIGH : LOW); // DOWN
+}
+
+void updateFloorIndicator() {
+  mcp0.digitalWrite(1, (currentFloor == 0) ? HIGH : LOW); // B
+  mcp0.digitalWrite(2, (currentFloor == 1) ? HIGH : LOW); // 1
+  mcp0.digitalWrite(3, (currentFloor == 2) ? HIGH : LOW); // 2
+  mcp0.digitalWrite(4, (currentFloor == 3) ? HIGH : LOW); // 3
+  mcp0.digitalWrite(5, (currentFloor == 4) ? HIGH : LOW); // 4
+  mcp0.digitalWrite(6, (currentFloor == 5) ? HIGH : LOW); // 5
+  mcp0.digitalWrite(7, (currentFloor == 6) ? HIGH : LOW); // 6
+  mcp0.digitalWrite(8, (currentFloor == 7) ? HIGH : LOW); // 7
+  mcp0.digitalWrite(9, (currentFloor == 8) ? HIGH : LOW); // 8
+  mcp0.digitalWrite(10, (currentFloor == 9) ? HIGH : LOW); // 9
+  mcp0.digitalWrite(11, (currentFloor == 10) ? HIGH : LOW); // 10
+  mcp0.digitalWrite(12, (currentFloor == 11) ? HIGH : LOW); // 11
+  mcp0.digitalWrite(13, (currentFloor == 12) ? HIGH : LOW); // 12
+  mcp0.digitalWrite(14, (currentFloor == 13) ? HIGH : LOW); // 13
 }
