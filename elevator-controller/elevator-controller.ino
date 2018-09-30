@@ -196,7 +196,7 @@ void setup()
 //  Serial.print(F("Port: "));
 //  Serial.println(rearDoorPort);
 
-  /* Poer Expander (MCP23017) */
+  /* Port Expander (MCP23017) */
   mcp0.begin(0); // 0x20
   mcp1.begin(1); // 0x21
 
@@ -235,7 +235,7 @@ void loop() {
   receiveOSC();
 
   // Read buttons
-  boolean reopenPressed = mcp1.digitalRead(3); // Reopen
+  boolean reopenPressed = (mcp1.digitalRead(3) == LOW); // Reopen
 
   if (elevatorState == ElevatorState::Stopped) {
     if (currentFloor == 0) {
@@ -249,7 +249,7 @@ void loop() {
       } 
       else if (doorState == DoorState::Open) {
         if (reopenPressed == true) {
-          reopenRearDoor();
+          openRearDoor();
         }
       }
     }
@@ -281,7 +281,7 @@ void loop() {
       }
       else if (doorState == DoorState::Open) {
         if (reopenPressed == true) {
-          reopenFrontDoor();
+          openFrontDoor();
         }
       }
     }
@@ -296,7 +296,7 @@ void loop() {
       }
       else if (doorState == DoorState::Open) {
         if (reopenPressed == true) {
-          reopenRearDoor();
+          openRearDoor();
         }
       }
     }
@@ -379,21 +379,9 @@ void openFrontDoor() {
   sendFrontDoorOSCMessage(openDoorMsg);
 }
 
-void reopenFrontDoor() {
-  doorState = DoorState::Open;
-  OSCMessage msgOut("/elevator/reopendoor");
-  sendFrontDoorOSCMessage(msgOut);
-}
-
 void openRearDoor() {
   doorState = DoorState::Open;
   OSCMessage msgOut("/elevator/opendoor");
-  sendRearDoorOSCMessage(msgOut);
-}
-
-void reopenRearDoor() {
-  doorState = DoorState::Open;
-  OSCMessage msgOut("/elevator/reopendoor");
   sendRearDoorOSCMessage(msgOut);
 }
 
@@ -408,7 +396,10 @@ void updateCallAcceptanceLights() {
 }
 
 void sendFrontDoorOSCMessage(OSCMessage &msg) {
-  Serial.println(F("OSC: send front")); // TODO: display message details
+  char buffer [32];
+  msg.getAddress(buffer);
+  Serial.print(F("OSC: send front: "));
+  Serial.println(buffer);
   
   Udp.beginPacket(frontDoorIp, frontDoorPort);
   msg.send(Udp);
@@ -417,7 +408,10 @@ void sendFrontDoorOSCMessage(OSCMessage &msg) {
 }
 
 void sendRearDoorOSCMessage(OSCMessage &msg) {
-  Serial.println(F("OSC: send rear")); // TODO: display message details
+  char buffer [32];
+  msg.getAddress(buffer);
+  Serial.print(F("OSC: send rear: "));
+  Serial.println(buffer);
   
   Udp.beginPacket(rearDoorIp, rearDoorPort);
   msg.send(Udp);

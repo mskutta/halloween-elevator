@@ -1,3 +1,5 @@
+
+
 #include <ESP8266WiFi.h> // WIFI support
 #include <ESP8266mDNS.h> // For network discovery
 #include <WiFiUdp.h> // OSC over UDP
@@ -20,6 +22,9 @@
 
 // Distance Sensors
 #include <VL53L0X.h>
+
+// Port Expander
+#include <Adafruit_MCP23008.h>
 
 /* Constants */
 const char* ESP_NAME = "elev-frnt-door";
@@ -58,6 +63,8 @@ unsigned long waitTimeout = 0;
 volatile int encoderCount = 0; //This variable will increase or decrease depending on the rotation of encoder
 int lastEncoderPosition = 0;
 
+bool oscOpenDoorReceived = false;
+
 /* Display */
 #define OLED_RESET -1
 Adafruit_SSD1306 display(OLED_RESET);
@@ -81,6 +88,9 @@ TicI2C tic(14);
 VL53L0X sensor1;
 VL53L0X sensor2;
 VL53L0X sensor3;
+
+/* Port Expander */
+Adafruit_MCP23008 mcp;
 
 void setup() {
   
@@ -236,6 +246,17 @@ void setup() {
   // Set up interrupts
   attachInterrupt(digitalPinToInterrupt(D5), ai0, RISING);
 
+  /* Port Expander (MCP23008) */
+  mcp.begin(0); // 0x20
+  mcp.pinMode(0, INPUT); // UP Button
+  mcp.pullUp(0, HIGH);  // turn on a 100K pullup internally
+  mcp.pinMode(1, INPUT); // Down Button
+  mcp.pullUp(1, HIGH);  // turn on a 100K pullup internally
+  mcp.pinMode(2, OUTPUT);  // Up Acceptance Light
+  mcp.pinMode(3, OUTPUT);  // Down Acceptance Light
+  mcp.pinMode(4, OUTPUT);  // Up Lanturn
+  mcp.pinMode(5, OUTPUT);  // Down Lanturn
+
   /* calibrate */
   calibrate();
 }
@@ -244,6 +265,14 @@ void loop() {
   ArduinoOTA.handle();
   receiveOSC();
 
+  // Read buttons
+  if (mcp.digitalRead(0) == true) { // Up Button
+    sendCallUp();
+  }
+  if (mcp.digitalRead(1) == true) { // Down Button
+    sendCallDown();
+  }
+  
   // Clear the display buffer
   display.clearDisplay();
   
@@ -269,9 +298,10 @@ void loop() {
   
   // Position Correction
   int positionCorrection = currentPosition - encoderPosition;
-  
-  // Button State
-  bool buttonPressed = (button.getSingleDebouncedPress());
+
+  // Messages
+  bool openDoorRequested = oscOpenDoorReceived;
+  oscOpenDoorReceived = false;
   
   // Handle Door States
   if (doorState == DoorState::Waiting) {
@@ -279,7 +309,7 @@ void loop() {
       // Close the door
       closeDoor();
     }
-    else if (range == -1 || buttonPressed || (encoderPosition != lastEncoderPosition)) {
+    else if (range == -1 || openDoorRequested || (encoderPosition != lastEncoderPosition)) {
       waitDoor(DOOR_DWELL_2);
     }
   }
@@ -289,7 +319,7 @@ void loop() {
     }
     else if ((range == -1 && encoderPosition > 1000) || // beam break - reopen
               positionCorrection < -64 || // door is being pushed - reopen
-              buttonPressed) { // button being pressed
+              openDoorRequested) { // open door requested
       reopenDoor();
     }
     else if (positionCorrection > 64) { // door is being pulled - wait
@@ -301,8 +331,8 @@ void loop() {
         encoderPosition > OPEN_POSITION || // Door passed jam - wait
         abs(positionCorrection) > 128) { // Door is being pushed or pulled - wait
         
-      digitalWrite(4, LOW); // Turn on EL wire
-      digitalWrite(5, LOW); // Turn on EL wire
+      //digitalWrite(4, LOW); // Turn on EL wire
+      //digitalWrite(5, LOW); // Turn on EL wire
       
       if(doorState == DoorState::Reopening) {
         waitDoor(DOOR_DWELL_2);
@@ -312,9 +342,9 @@ void loop() {
     }
   }
   else if (doorState == DoorState::Closed) {
-    if (buttonPressed) {
-      digitalWrite(4, HIGH); // Turn on EL wire
-      digitalWrite(5, HIGH); // Turn on EL wire
+    if (openDoorRequested) {
+      //digitalWrite(4, HIGH); // Turn on EL wire
+      //digitalWrite(5, HIGH); // Turn on EL wire
       openDoor();
     }
   }
@@ -483,9 +513,9 @@ int contiguousRangeErrorCount = 0;
 
 int getRange() {
   int range = 0;
-  int range1 = max(sensor1.readRangeContinuousMillimeters(), 30);
-  int range2 = max(sensor2.readRangeContinuousMillimeters(), 30);
-  int range3 = max(sensor3.readRangeContinuousMillimeters(), 30);
+  int range1 = _max(sensor1.readRangeContinuousMillimeters(), 30);
+  int range2 = _max(sensor2.readRangeContinuousMillimeters(), 30);
+  int range3 = _max(sensor3.readRangeContinuousMillimeters(), 30);
   
   // Calculate average range.  
   int averageRange = (int) ((range1 + range2 + range3) / 3);
@@ -564,6 +594,7 @@ void receiveOSC(){
 }
 
 void oscCallUpAcceptanceLight(OSCMessage &msg, int addrOffset){
+  
   display.setCursor(0,24);
   display.print(F("rcv: call up acceptance"));
   display.display();
@@ -571,6 +602,7 @@ void oscCallUpAcceptanceLight(OSCMessage &msg, int addrOffset){
 }
 
 void oscCallDownAcceptanceLight(OSCMessage &msg, int addrOffset){
+  
   display.setCursor(0,24);
   display.print(F("rcv: call down acceptance"));
   display.display();
@@ -578,8 +610,28 @@ void oscCallDownAcceptanceLight(OSCMessage &msg, int addrOffset){
 }
 
 void oscOpenDoor(OSCMessage &msg, int addrOffset){
+  oscOpenDoorReceived = true;
   display.setCursor(0,24);
   display.print(F("rcv: open door"));
   display.display();
   Serial.println(F("rcv: open door"));
+}
+
+void sendCallUp() {
+  OSCMessage msgOut("/elevator/callup");
+  sendControllerOSCMessage(msgOut);
+}
+
+void sendCallDown() {
+  OSCMessage msgOut("/elevator/calldown");
+  sendControllerOSCMessage(msgOut);
+}
+
+void sendControllerOSCMessage(OSCMessage &msg) {
+  Serial.println(F("OSC: send controller")); // TODO: display message details
+  
+  Udp.beginPacket(controllerIp, controllerPort);
+  msg.send(Udp);
+  Udp.endPacket();
+  msg.empty();
 }
