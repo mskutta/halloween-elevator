@@ -239,13 +239,13 @@ void loop() {
 
   if (elevatorState == ElevatorState::Stopped) {
     if (currentFloor == 0) {
+      startFloor = 0;
+      endFloor = 1;
       if (doorState == DoorState::Closed) {
         Serial.println(F("Return to 1st floor"));
         elevatorState = ElevatorState::Moving;
         startTime = currentTime;
         endTime = currentTime + 20000;
-        startFloor = 0;
-        endFloor = 1;
       } 
       else if (doorState == DoorState::Open) {
         if (reopenPressed == true) {
@@ -286,13 +286,13 @@ void loop() {
       }
     }
     else if (currentFloor == 13) {
+      startFloor = 13;
+      endFloor = 1;
       if (doorState == DoorState::Closed) {
         Serial.println(F("Return to 1st floor"));
         elevatorState = ElevatorState::Moving;
         startTime = currentTime;
         endTime = currentTime + 13000;
-        startFloor = 13;
-        endFloor = 1;
       }
       else if (doorState == DoorState::Open) {
         if (reopenPressed == true) {
@@ -420,9 +420,9 @@ void sendRearDoorOSCMessage(OSCMessage &msg) {
 }
 
 void updateButtonPannel() {
-  mcp1.digitalWrite(0, (endFloor == 0) ? HIGH : LOW); // B
-  mcp1.digitalWrite(0, (endFloor == 1) ? HIGH : LOW); // 1
-  mcp1.digitalWrite(0, (endFloor == 13) ? HIGH : LOW); // 13
+  mcp1.digitalWrite(0, (endFloor == 0 && currentFloor != 0) ? HIGH : LOW); // B
+  mcp1.digitalWrite(1, (endFloor == 1 && currentFloor != 1) ? HIGH : LOW); // 1
+  mcp1.digitalWrite(2, (endFloor == 13 && currentFloor != 13) ? HIGH : LOW); // 13
 }
 
 void updateDirectionIndicator() {
