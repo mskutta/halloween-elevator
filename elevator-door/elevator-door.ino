@@ -82,7 +82,7 @@ IPAddress controllerIp;
 unsigned int controllerPort;
 
 /* TIC */
-TicI2C tic(14);
+TicSerial tic(Serial);
 
 /* VL53L0X */
 VL53L0X sensor1;
@@ -95,8 +95,8 @@ Adafruit_MCP23008 mcp;
 void setup() {
   
   /* Serial and I2C */
-  Serial.begin(74880);
-  Serial.println(F("setup"));
+  Serial.begin(9600);
+  // Serial.println(F("setup"));
   Wire.begin(D2, D1); // join i2c bus with SDA=D1 and SCL=D2 of NodeMCU
 
   delay(1000);
@@ -110,25 +110,25 @@ void setup() {
 
   /* WiFi */
   sprintf(hostname, "%s-%06X", ESP_NAME, ESP.getChipId());
-  Serial.print(F("Connecting to "));
-  Serial.println(WIFI_SSID);
+  // Serial.print(F("Connecting to "));
+  // Serial.println(WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.hostname(hostname);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.waitForConnectResult() != WL_CONNECTED) {
-    Serial.println("Connection Failed! Rebooting...");
+    // Serial.println("Connection Failed! Rebooting...");
     delay(5000);
     ESP.restart();
   }
   //while (WiFi.status() != WL_CONNECTED)
   //{
   //  delay(500);
-  //  Serial.print(".");
+  //  // Serial.print(".");
   //}
-  Serial.println();
+  // Serial.println();
 
-  Serial.print(F("Connected, IP address: "));
-  Serial.println(WiFi.localIP());
+  // Serial.print(F("Connected, IP address: "));
+  // Serial.println(WiFi.localIP());
 
   display.setCursor(0,0);
   display.print("MAC:");
@@ -151,26 +151,26 @@ void setup() {
     }
 
     // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
-    Serial.println("Start updating " + type);
+    // Serial.println("Start updating " + type);
   });
   ArduinoOTA.onEnd([]() {
-    Serial.println("\nEnd");
+    // Serial.println("\nEnd");
   });
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+    // Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
   });
   ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("Error[%u]: ", error);
+    // Serial.printf("Error[%u]: ", error);
     if (error == OTA_AUTH_ERROR) {
-      Serial.println("Auth Failed");
+      // Serial.println("Auth Failed");
     } else if (error == OTA_BEGIN_ERROR) {
-      Serial.println("Begin Failed");
+      // Serial.println("Begin Failed");
     } else if (error == OTA_CONNECT_ERROR) {
-      Serial.println("Connect Failed");
+      // Serial.println("Connect Failed");
     } else if (error == OTA_RECEIVE_ERROR) {
-      Serial.println("Receive Failed");
+      // Serial.println("Receive Failed");
     } else if (error == OTA_END_ERROR) {
-      Serial.println("End Failed");
+      // Serial.println("End Failed");
     }
   });
   ArduinoOTA.begin();
@@ -180,28 +180,29 @@ void setup() {
   MDNS.addService(ESP_NAME, "udp", OSC_PORT);
 
   /* UDP */
-  Serial.println(F("Starting UDP"));
+  // Serial.println(F("Starting UDP"));
   Udp.begin(OSC_PORT);
-  Serial.print(F("Local port: "));
-  Serial.println(Udp.localPort());
+  // Serial.print(F("Local port: "));
+  // Serial.println(Udp.localPort());
 
   // Discover Elevator Controller
   while (MDNS.queryService("elev-ctrl", "udp") == 0) {
-    Serial.println(F("mDNS Waiting for elev-ctrl..."));
+    // Serial.println(F("mDNS Waiting for elev-ctrl..."));
     delay(1000);
   }
   controllerIp = MDNS.IP(0);
   controllerPort = MDNS.port(0);
 
-  Serial.println(F("Elevator controller found"));
-  Serial.print(F("IP: "));
-  Serial.println(controllerIp);
-  Serial.print(F("Port: "));
-  Serial.println(controllerPort);
+  // Serial.println(F("Elevator controller found"));
+  // Serial.print(F("IP: "));
+  // Serial.println(controllerIp);
+  // Serial.print(F("Port: "));
+  // Serial.println(controllerPort);
 
   /* TIC */
+  // Set the TIC product
   tic.setProduct(TicProduct::T500);
-  
+ 
   /* VL53L0X */
   // WARNING: Shutdown pins of VL53L0X ACTIVE-LOW-ONLY NO TOLERANT TO 5V will fry them
   pinMode(SENSOR2_XSHUT_PIN, OUTPUT);
@@ -317,6 +318,9 @@ void loop() {
   else if (doorState == DoorState::Closing) {
     if (stopped) {
       doorState = DoorState::Closed;
+
+      OSCMessage closedOSCMessage("/elevator/frontdoorclosed");
+      sendControllerOSCMessage(closedOSCMessage);
     }
     else if ((range == -1 && encoderPosition > 1000) || // beam break - reopen
               positionCorrection < -64 || // door is being pushed - reopen
@@ -414,7 +418,7 @@ void openDoor() {
   tic.setStepMode(TicStepMode::Microstep8);
   tic.setCurrentLimit(1500);
   tic.setMaxSpeed(90000000); // ~11.25 revolutions (18000 steps) to open door. 2 second open time = 9000 steps/sec
-  tic.setMaxAccel(500000); // 10000 steps/sec
+  tic.setMaxAccel(400000); // 10000 steps/sec
   tic.setMaxDecel(700000); // 10000 steps/sec
   tic.haltAndSetPosition(getEncoderPosition());
   tic.setTargetPosition(OPEN_POSITION);
@@ -435,7 +439,7 @@ void calibrate() {
   display.display(); // Show Adafruit logo
   display.clearDisplay();
 
-  Serial.println(F("Calibrating..."));
+  // Serial.println(F("Calibrating..."));
   
   doorState = DoorState::Calibrating;
   
@@ -458,7 +462,7 @@ void calibrate() {
   
   int range = getRange();
   if (range != -1) {
-    Serial.println(F("Valid Range 1"));
+    // Serial.println(F("Valid Range 1"));
     // if range is less than 100mm, move into position to accurately measure
     if (range < 100) {
       tic.haltAndSetPosition(0);
@@ -475,24 +479,24 @@ void calibrate() {
     }
 
     if (range != -1) {
-      Serial.println(F("Valid Range 2"));
+      // Serial.println(F("Valid Range 2"));
       int rangePosition = getRangePosition(range);
       setEncoderPosition(rangePosition);
       tic.haltAndSetPosition(rangePosition);
       tic.setTargetPosition(OPEN_POSITION);
       tic.exitSafeStart();
-      Serial.println(range);
-      Serial.println(rangePosition);
-      Serial.println(OPEN_POSITION);
-      Serial.println(tic.getCurrentPosition());
-      Serial.println(tic.getTargetPosition());
-      Serial.println(tic.getVinVoltage());
-      Serial.println();
+      // Serial.println(range);
+      // Serial.println(rangePosition);
+      // Serial.println(OPEN_POSITION);
+      // Serial.println(tic.getCurrentPosition());
+      // Serial.println(tic.getTargetPosition());
+      // Serial.println(tic.getVinVoltage());
+      // Serial.println();
       while (tic.getCurrentPosition() != tic.getTargetPosition()) {
         // Wait for in range position read
-        Serial.println(tic.getCurrentPosition());
-        Serial.println(tic.getTargetPosition());
-        Serial.println();
+        // Serial.println(tic.getCurrentPosition());
+        // Serial.println(tic.getTargetPosition());
+        // Serial.println();
         delay(20);
         tic.resetCommandTimeout();
       }
@@ -536,8 +540,8 @@ int getRange() {
   int averageRange = (int) ((range1 + range2 + range3) / 3);
   
   // Determine error condition
-  int minRange = averageRange - 10;
-  int maxRange = averageRange + 10;
+  int minRange = averageRange - 20;
+  int maxRange = averageRange + 20;
   bool error = ((range1 > 1200) || (range2 > 1200) || (range3 > 1200) || 
                 (range1 < minRange) || (range1 > maxRange) || 
                 (range2 < minRange) || (range2 > maxRange) || 
@@ -613,7 +617,9 @@ void oscCallUpAcceptanceLight(OSCMessage &msg, int addrOffset){
   display.setCursor(0,24);
   display.print(F("rcv: call up acceptance"));
   display.display();
-  Serial.println(F("rcv: call up acceptance"));
+  // Serial.println(F("rcv: call up acceptance"));
+
+  mcp.digitalWrite(3, (msg.getInt(0) == 1) ? HIGH : LOW); // UP
 }
 
 void oscCallDownAcceptanceLight(OSCMessage &msg, int addrOffset){
@@ -621,7 +627,9 @@ void oscCallDownAcceptanceLight(OSCMessage &msg, int addrOffset){
   display.setCursor(0,24);
   display.print(F("rcv: call down acceptance"));
   display.display();
-  Serial.println(F("rcv: call down acceptance"));
+  // Serial.println(F("rcv: call down acceptance"));
+
+  mcp.digitalWrite(1, (msg.getInt(0) == 1) ? HIGH : LOW); // Down
 }
 
 void oscOpenDoor(OSCMessage &msg, int addrOffset){
@@ -629,7 +637,7 @@ void oscOpenDoor(OSCMessage &msg, int addrOffset){
   display.setCursor(0,24);
   display.print(F("rcv: open door"));
   display.display();
-  Serial.println(F("rcv: open door"));
+  // Serial.println(F("rcv: open door"));
 }
 
 void sendCallUp() {
@@ -643,7 +651,7 @@ void sendCallDown() {
 }
 
 void sendControllerOSCMessage(OSCMessage &msg) {
-  Serial.println(F("OSC: send controller")); // TODO: display message details
+  // Serial.println(F("OSC: send controller")); // TODO: display message details
   
   Udp.beginPacket(controllerIp, controllerPort);
   msg.send(Udp);
