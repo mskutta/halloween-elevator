@@ -30,8 +30,8 @@
 const char* ESP_NAME = "elev-frnt-door";
 //const char* ESP_NAME = "elev-rear-door";
 
-const char* SSID = "skutta-net"; // network SSID (name)
-const char* PASSWORD = "ymnUWpdPpP8V"; // network password
+const char* WIFI_SSID = "skutta-net"; // network SSID (name)
+const char* WIFI_PASSWORD = "ymnUWpdPpP8V"; // network password
 const unsigned int OSC_PORT = 53000;
 
 const int CLOSED_POSITION = 0;
@@ -111,10 +111,10 @@ void setup() {
   /* WiFi */
   sprintf(hostname, "%s-%06X", ESP_NAME, ESP.getChipId());
   Serial.print(F("Connecting to "));
-  Serial.println(SSID);
+  Serial.println(WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.hostname(hostname);
-  WiFi.begin(SSID, PASSWORD);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.waitForConnectResult() != WL_CONNECTED) {
     Serial.println("Connection Failed! Rebooting...");
     delay(5000);
@@ -248,14 +248,14 @@ void setup() {
 
   /* Port Expander (MCP23008) */
   mcp.begin(0); // 0x20
-  mcp.pinMode(0, INPUT); // UP Button
+  mcp.pinMode(0, INPUT); // Down Button
   mcp.pullUp(0, HIGH);  // turn on a 100K pullup internally
-  mcp.pinMode(1, INPUT); // Down Button
-  mcp.pullUp(1, HIGH);  // turn on a 100K pullup internally
-  mcp.pinMode(2, OUTPUT);  // Up Acceptance Light
-  mcp.pinMode(3, OUTPUT);  // Down Acceptance Light
-  mcp.pinMode(4, OUTPUT);  // Up Lanturn
-  mcp.pinMode(5, OUTPUT);  // Down Lanturn
+  mcp.pinMode(1, OUTPUT);  // Down Acceptance Light
+  mcp.pinMode(2, INPUT); // Up Button
+  mcp.pullUp(2, HIGH);  // turn on a 100K pullup internally
+  mcp.pinMode(3, OUTPUT);  // Up Acceptance Light
+  mcp.pinMode(4, OUTPUT);  // Down Lanturn
+  mcp.pinMode(5, OUTPUT);  // Up Lanturn
 
   /* calibrate */
   calibrate();
@@ -266,11 +266,12 @@ void loop() {
   receiveOSC();
 
   // Read buttons
-  if (mcp.digitalRead(0) == true) { // Up Button
-    sendCallUp();
-  }
-  if (mcp.digitalRead(1) == true) { // Down Button
+  if (mcp.digitalRead(0) == LOW) { // Down Button
     sendCallDown();
+    
+  }
+  if (mcp.digitalRead(2) == LOW) { // Up Button
+    sendCallUp();
   }
   
   // Clear the display buffer
@@ -433,6 +434,8 @@ void calibrate() {
   display.println(F("Calibrating..."));
   display.display(); // Show Adafruit logo
   display.clearDisplay();
+
+  Serial.println(F("Calibrating..."));
   
   doorState = DoorState::Calibrating;
   
@@ -455,6 +458,7 @@ void calibrate() {
   
   int range = getRange();
   if (range != -1) {
+    Serial.println(F("Valid Range 1"));
     // if range is less than 100mm, move into position to accurately measure
     if (range < 100) {
       tic.haltAndSetPosition(0);
@@ -471,13 +475,24 @@ void calibrate() {
     }
 
     if (range != -1) {
+      Serial.println(F("Valid Range 2"));
       int rangePosition = getRangePosition(range);
       setEncoderPosition(rangePosition);
       tic.haltAndSetPosition(rangePosition);
       tic.setTargetPosition(OPEN_POSITION);
       tic.exitSafeStart();
+      Serial.println(range);
+      Serial.println(rangePosition);
+      Serial.println(OPEN_POSITION);
+      Serial.println(tic.getCurrentPosition());
+      Serial.println(tic.getTargetPosition());
+      Serial.println(tic.getVinVoltage());
+      Serial.println();
       while (tic.getCurrentPosition() != tic.getTargetPosition()) {
         // Wait for in range position read
+        Serial.println(tic.getCurrentPosition());
+        Serial.println(tic.getTargetPosition());
+        Serial.println();
         delay(20);
         tic.resetCommandTimeout();
       }
@@ -572,7 +587,7 @@ int getRange() {
 void ai0() {
   // ai0 is activated if DigitalPin nr 2 is going from LOW to HIGH
   // Check pin 3 to determine the direction
-  if (digitalRead(3)==LOW) {
+  if (digitalRead(D6)==LOW) {
     encoderCount++;
   } else {
     encoderCount--;

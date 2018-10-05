@@ -12,17 +12,16 @@
 #include <Wire.h>
 
 // Display (SSD1306)
-#include <Adafruit_GFX.h> 
-#include <Adafruit_SSD1306.h>
-#include <SPI.h>
+#include "SSD1306Ascii.h"
+#include "SSD1306AsciiWire.h"
 
 // Port Expander
 #include <Adafruit_MCP23017.h>
 
 /* Constants */
 const char* ESP_NAME = "elev-ctrl";
-const char* SSID = "skutta-net"; // network SSID (name)
-const char* PASSWORD = "ymnUWpdPpP8V"; // network password
+const char* WIFI_SSID = "skutta-net"; // network SSID (name)
+const char* WIFI_PASSWORD = "ymnUWpdPpP8V"; // network password
 const unsigned int OSC_PORT = 53000;
 
 /* Variables */
@@ -56,19 +55,17 @@ bool rearDoorClosed = false;
 
 /* Display */
 #define OLED_RESET -1
-Adafruit_SSD1306 display(OLED_RESET);
-
-#if (SSD1306_LCDHEIGHT != 32)
-#error("Height incorrect, please fix Adafruit_SSD1306.h!");
-#endif
+SSD1306AsciiWire oled;
 
 /* WIFI */
 char hostname[17] = {0};
 
 /* OSC */
 WiFiUDP Udp;
+String frontDoorHostname;
 IPAddress frontDoorIp;
 unsigned int frontDoorPort;
+String rearDoorHostname[32];
 IPAddress rearDoorIp;
 unsigned int rearDoorPort;
 
@@ -79,49 +76,43 @@ Adafruit_MCP23017 mcp1;
 void setup()
 {
   Serial.begin(74880);
-  Serial.println(F("setup"));
   Wire.begin(D2, D1); // join i2c bus with SDA=D1 and SCL=D2 of NodeMCU
 
   delay(1000);
 
   /* Display */
-  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);  // initialize with the I2C addr 0x3C (for the 128x32)
-  display.display(); // Show Adafruit logo
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(WHITE);
+  oled.begin(&Adafruit128x64, 0x3C);  // initialize with the I2C addr 0x3C (for the 128x64)
+  oled.setFont(System5x7);
+  oled.setScrollMode(SCROLL_MODE_AUTO);
 
   /* WiFi */
   sprintf(hostname, "%s-%06X", ESP_NAME, ESP.getChipId());
-  Serial.print(F("Connecting to "));
-  Serial.println(SSID);
+  oled.print(F("WiFi: "));
+  oled.println(WIFI_SSID);
   WiFi.mode(WIFI_STA);
+  WiFi.setAutoConnect (true);
+  WiFi.setAutoReconnect (true);
   WiFi.hostname(hostname);
-  WiFi.begin(SSID, PASSWORD);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.waitForConnectResult() != WL_CONNECTED) {
-    Serial.println("Connection Failed! Rebooting...");
+    oled.println(F("Connection Failed!"));
     delay(5000);
     ESP.restart();
   }
   //while (WiFi.status() != WL_CONNECTED)
   //{
   //  delay(500);
-  //  Serial.print(".");
+  //  oled.print(".");
   //}
-  Serial.println();
 
-  Serial.print(F("Connected, IP address: "));
-  Serial.println(WiFi.localIP());
-
-  display.setCursor(0,0);
-  display.print("MAC:");
-  display.print(WiFi.macAddress());
-  display.setCursor(0,8);
-  display.print(hostname);
-  display.setCursor(0,16);
-  display.print("IP: ");
-  display.print(WiFi.localIP());
-  display.display();
+  /* UDP */
+  Udp.begin(OSC_PORT);
+  
+  oled.println(WiFi.macAddress());
+  oled.println(hostname);
+  oled.print(WiFi.localIP());
+  oled.print(F(":"));
+  oled.println(Udp.localPort());
 
   /* OTA */
   ArduinoOTA.setHostname(hostname);
@@ -134,26 +125,26 @@ void setup()
     }
 
     // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
-    Serial.println("Start updating " + type);
+    oled.println("Start updating " + type);
   });
   ArduinoOTA.onEnd([]() {
-    Serial.println("\nEnd");
+    oled.println("\nEnd");
   });
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+    oled.printf("Progress: %u%%\r", (progress / (total / 100)));
   });
   ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("Error[%u]: ", error);
+    oled.printf("Error[%u]: ", error);
     if (error == OTA_AUTH_ERROR) {
-      Serial.println("Auth Failed");
+      oled.println("Auth Failed");
     } else if (error == OTA_BEGIN_ERROR) {
-      Serial.println("Begin Failed");
+      oled.println("Begin Failed");
     } else if (error == OTA_CONNECT_ERROR) {
-      Serial.println("Connect Failed");
+      oled.println("Connect Failed");
     } else if (error == OTA_RECEIVE_ERROR) {
-      Serial.println("Receive Failed");
+      oled.println("Receive Failed");
     } else if (error == OTA_END_ERROR) {
-      Serial.println("End Failed");
+      oled.println("End Failed");
     }
   });
   ArduinoOTA.begin();
@@ -162,39 +153,36 @@ void setup()
   // Initialization happens inside ArduinoOTA;
   MDNS.addService(ESP_NAME, "udp", OSC_PORT);
 
-  /* UDP */
-  Serial.println(F("Starting UDP"));
-  Udp.begin(OSC_PORT);
-  Serial.print(F("Local port: "));
-  Serial.println(Udp.localPort());
+  // Wait to view display
+  delay(2000);
 
   // Discover Elevator Front Door
   while (MDNS.queryService("elev-frnt-door", "udp") == 0) {
-    Serial.println(F("mDNS Waiting for elev-frnt-door..."));
+    oled.println(F("find elev-frnt-door"));
     delay(1000);
   }
+  frontDoorHostname = MDNS.hostname(0);
   frontDoorIp = MDNS.IP(0);
   frontDoorPort = MDNS.port(0);
 
-  Serial.println(F("Elevator front door found"));
-  Serial.print(F("IP: "));
-  Serial.println(frontDoorIp);
-  Serial.print(F("Port: "));
-  Serial.println(frontDoorPort);
+  oled.println(frontDoorHostname);
+  oled.print(frontDoorIp);
+  oled.print(F(":"));
+  oled.println(frontDoorPort);
 
   // Discover Elevator Rear Door
 //  while (MDNS.queryService("elev-rear-door", "udp") == 0) {
-//    Serial.println(F("mDNS Waiting for elev-rear-door..."));
+//    oled.println(F("mDNS Waiting for elev-rear-door..."));
 //    delay(1000);
 //  }
+//  rearDoorHostname = MDNS.hostname(0);
 //  rearDoorIp = MDNS.IP(0);
 //  rearDoorPort = MDNS.port(0);
 //
-//  Serial.println(F("Elevator rear door found"));
-//  Serial.print(F("IP: "));
-//  Serial.println(rearDoorIp);
-//  Serial.print(F("Port: "));
-//  Serial.println(rearDoorPort);
+//  oled.println(rearDoorHostname);
+//  oled.print(rearDoorIp);
+//  oled.print(F("""));
+//  oled.println(rearDoorPort);
 
   /* Port Expander (MCP23017) */
   mcp0.begin(0); // 0x20
@@ -242,7 +230,7 @@ void loop() {
       startFloor = 0;
       endFloor = 1;
       if (doorState == DoorState::Closed) {
-        Serial.println(F("Return to 1st floor"));
+        oled.println(F("Return to 1st floor"));
         elevatorState = ElevatorState::Moving;
         startTime = currentTime;
         endTime = currentTime + 20000;
@@ -256,13 +244,13 @@ void loop() {
     else if (currentFloor == 1) {
       if (doorState == DoorState::Closed) {
         if (endFloor == 0) {
-          Serial.println(F("Go to basement"));
+          oled.println(F("Go to basement"));
           elevatorState = ElevatorState::Moving;
           startTime = currentTime;
           endTime = currentTime + 6000;
           startFloor = 1;
         } else if (endFloor == 13) {
-          Serial.println(F("Go to 13th floor"));
+          oled.println(F("Go to 13th floor"));
           elevatorState = ElevatorState::Moving;
           startTime = currentTime;
           endTime = currentTime + 13000;
@@ -289,7 +277,7 @@ void loop() {
       startFloor = 13;
       endFloor = 1;
       if (doorState == DoorState::Closed) {
-        Serial.println(F("Return to 1st floor"));
+        oled.println(F("Return to 1st floor"));
         elevatorState = ElevatorState::Moving;
         startTime = currentTime;
         endTime = currentTime + 13000;
@@ -305,7 +293,7 @@ void loop() {
     currentFloor = round(map(currentTime, startTime, endTime, startFloor, endFloor));
 
     if (currentTime >= endTime) {
-      Serial.println(F("Floor reached, stop"));
+      oled.println(F("Floor reached, stop"));
       elevatorState = ElevatorState::Stopped;
       currentFloor = endFloor;
       if (currentFloor == 0) {
@@ -322,7 +310,7 @@ void loop() {
   }
 
   if (callState != lastCallState) {
-    Serial.println(CallStateString[(int)callState]);
+    oled.println(CallStateString[(int)callState]);
     updateCallAcceptanceLights();
     lastCallState = callState;
   }
@@ -349,22 +337,22 @@ void receiveOSC(){
 
 void oscCallUp(OSCMessage &msg, int addrOffset){
   callState = CallState::Up;
-  Serial.println(F("rcv: callup"));
+  oled.println(F("rcv: callup"));
 }
 
 void oscCallDown(OSCMessage &msg, int addrOffset){
   callState = CallState::Down;
-  Serial.println(F("rcv: calldown"));
+  oled.println(F("rcv: calldown"));
 }
 
 void oscFrontDoorClosed(OSCMessage &msg, int addrOffset){
   doorState = DoorState::Closed;
-  Serial.println(F("rcv: frontdoorclosed"));
+  oled.println(F("rcv: frontdoorclosed"));
 }
 
 void oscRearDoorClosed(OSCMessage &msg, int addrOffset){
   doorState = DoorState::Closed;
-  Serial.println(F("rcv: reardoorclosed"));
+  oled.println(F("rcv: reardoorclosed"));
 }
 
 void openFrontDoor() {
@@ -398,8 +386,8 @@ void updateCallAcceptanceLights() {
 void sendFrontDoorOSCMessage(OSCMessage &msg) {
   char buffer [32];
   msg.getAddress(buffer);
-  Serial.print(F("OSC: send front: "));
-  Serial.println(buffer);
+  oled.println(F("send front:"));
+  oled.println(buffer);
   
   Udp.beginPacket(frontDoorIp, frontDoorPort);
   msg.send(Udp);
@@ -410,8 +398,8 @@ void sendFrontDoorOSCMessage(OSCMessage &msg) {
 void sendRearDoorOSCMessage(OSCMessage &msg) {
   char buffer [32];
   msg.getAddress(buffer);
-  Serial.print(F("OSC: send rear: "));
-  Serial.println(buffer);
+  oled.println(F("send rear:"));
+  oled.println(buffer);
   
   Udp.beginPacket(rearDoorIp, rearDoorPort);
   msg.send(Udp);
