@@ -54,7 +54,6 @@ bool frontDoorClosed = false;
 bool rearDoorClosed = false;
 
 /* Display */
-#define OLED_RESET -1
 SSD1306AsciiWire oled;
 
 /* WIFI */
@@ -84,6 +83,7 @@ void setup()
   oled.begin(&Adafruit128x64, 0x3C);  // initialize with the I2C addr 0x3C (for the 128x64)
   oled.setFont(System5x7);
   oled.setScrollMode(SCROLL_MODE_AUTO);
+  oled.clear();
 
   /* WiFi */
   sprintf(hostname, "%s-%06X", ESP_NAME, ESP.getChipId());
@@ -258,20 +258,19 @@ void loop() {
         } else if (callState == CallState::Up) {
           elevatorDirection = ElevatorDirection::Up;
           endFloor = 13;
-          callState = CallState::None;
           openFrontDoor();
         } else if (callState == CallState::Down) {
           elevatorDirection = ElevatorDirection::Down;
           endFloor = 0;
-          callState = CallState::None;
           openFrontDoor();
         }
       }
       else if (doorState == DoorState::Open) {
-        if (reopenPressed == true) {
+        if (reopenPressed == true || callState != CallState::None) {
           openFrontDoor();
         }
       }
+      callState = CallState::None;
     }
     else if (currentFloor == 13) {
       startFloor = 13;
@@ -310,8 +309,9 @@ void loop() {
   }
 
   if (callState != lastCallState) {
+    oled.print(F("Call State: "));
     oled.println(CallStateString[(int)callState]);
-    updateCallAcceptanceLights();
+    updateCallAcceptance();
     lastCallState = callState;
   }
 
@@ -327,37 +327,33 @@ void receiveOSC(){
     while(size--)
       msgIn.fill(Udp.read());
     if(!msgIn.hasError()){
-      msgIn.route("/elevator/callup",oscCallUp);
-      msgIn.route("/elevator/calldown",oscCallDown);
-      msgIn.route("/elevator/frontdoorclosed",oscFrontDoorClosed);
-      msgIn.route("/elevator/reardoorclosed",oscRearDoorClosed);
+      char buffer [32];
+      msgIn.getAddress(buffer);
+      oled.print(F("recv: "));
+      oled.println(buffer);
+      
+      msgIn.route("/call/up",receiveCallUp);
+      msgIn.route("/call/down",receiveCallDown);
+      msgIn.route("/door/closed",receiveDoorClosed);
     }
   }
 }
 
-void oscCallUp(OSCMessage &msg, int addrOffset){
+void receiveCallUp(OSCMessage &msg, int addrOffset){
   callState = CallState::Up;
-  oled.println(F("rcv: callup"));
 }
 
-void oscCallDown(OSCMessage &msg, int addrOffset){
+void receiveCallDown(OSCMessage &msg, int addrOffset){
   callState = CallState::Down;
-  oled.println(F("rcv: calldown"));
 }
 
-void oscFrontDoorClosed(OSCMessage &msg, int addrOffset){
+void receiveDoorClosed(OSCMessage &msg, int addrOffset){
   doorState = DoorState::Closed;
-  oled.println(F("rcv: frontdoorclosed"));
-}
-
-void oscRearDoorClosed(OSCMessage &msg, int addrOffset){
-  doorState = DoorState::Closed;
-  oled.println(F("rcv: reardoorclosed"));
 }
 
 void openFrontDoor() {
   doorState = DoorState::Open;
-  OSCMessage openDoorMsg("/elevator/opendoor");
+  OSCMessage openDoorMsg("/door/open");
   if (elevatorDirection == ElevatorDirection::Up) {
     openDoorMsg.add("up");
   }
@@ -369,16 +365,16 @@ void openFrontDoor() {
 
 void openRearDoor() {
   doorState = DoorState::Open;
-  OSCMessage msgOut("/elevator/opendoor");
+  OSCMessage msgOut("/door/open");
   sendRearDoorOSCMessage(msgOut);
 }
 
-void updateCallAcceptanceLights() {
-  OSCMessage upOSCMessage("/elevator/callupacceptancelight");
+void updateCallAcceptance() {
+  OSCMessage upOSCMessage("/call/up");
   upOSCMessage.add((callState == CallState::Up) ? 1 : 0);
   sendFrontDoorOSCMessage(upOSCMessage);
 
-  OSCMessage downOSCMessage("/elevator/calldownacceptancelight");
+  OSCMessage downOSCMessage("/call/down");
   downOSCMessage.add((callState == CallState::Down) ? 1 : 0);
   sendFrontDoorOSCMessage(downOSCMessage);
 }
@@ -386,7 +382,7 @@ void updateCallAcceptanceLights() {
 void sendFrontDoorOSCMessage(OSCMessage &msg) {
   char buffer [32];
   msg.getAddress(buffer);
-  oled.println(F("send front:"));
+  oled.print(F("send front:"));
   oled.println(buffer);
   
   Udp.beginPacket(frontDoorIp, frontDoorPort);
@@ -398,7 +394,7 @@ void sendFrontDoorOSCMessage(OSCMessage &msg) {
 void sendRearDoorOSCMessage(OSCMessage &msg) {
   char buffer [32];
   msg.getAddress(buffer);
-  oled.println(F("send rear:"));
+  oled.print(F("send rear:"));
   oled.println(buffer);
   
   Udp.beginPacket(rearDoorIp, rearDoorPort);
