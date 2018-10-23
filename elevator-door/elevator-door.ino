@@ -1,3 +1,6 @@
+//#define FRONT_DOOR 1
+#define REAR_DOOR 1
+
 #include <ESP8266WiFi.h> // WIFI support
 #include <ESP8266mDNS.h> // For network discovery
 #include <WiFiUdp.h> // OSC over UDP
@@ -24,8 +27,12 @@
 #include <Adafruit_MCP23008.h>
 
 /* Constants */
+#ifdef FRONT_DOOR
 const char* ESP_NAME = "elev-frnt-door";
-//const char* ESP_NAME = "elev-rear-door";
+#endif
+#ifdef REAR_DOOR
+const char* ESP_NAME = "elev-rear-door";
+#endif
 
 const char* WIFI_SSID = "skutta-net"; // network SSID (name)
 const char* WIFI_PASSWORD = "ymnUWpdPpP8V"; // network password
@@ -91,7 +98,6 @@ void setup() {
   
   /* Serial and I2C */
   Serial.begin(9600);
-  // Serial.println(F("setup"));
   Wire.begin(D2, D1); // join i2c bus with SDA=D1 and SCL=D2 of NodeMCU
 
   delay(1000);
@@ -103,6 +109,9 @@ void setup() {
   oled.clear();
   rowHeight = oled.fontRows();
 
+  /* Function Select */
+  oled.println(ESP_NAME);
+  
   /* WiFi */
   sprintf(hostname, "%s-%06X", ESP_NAME, ESP.getChipId());
   oled.print(F("WiFi: "));
@@ -143,26 +152,26 @@ void setup() {
     }
 
     // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
-    // Serial.println("Start updating " + type);
+    oled.println("Start updating " + type);
   });
   ArduinoOTA.onEnd([]() {
-    // Serial.println("\nEnd");
+    oled.println(F("End"));
   });
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    // Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+    oled.printf("Progress: %u%%\r", (progress / (total / 100)));
   });
   ArduinoOTA.onError([](ota_error_t error) {
-    // Serial.printf("Error[%u]: ", error);
+    oled.printf("Error[%u]: ", error);
     if (error == OTA_AUTH_ERROR) {
-      // Serial.println("Auth Failed");
+      oled.println("Auth Failed");
     } else if (error == OTA_BEGIN_ERROR) {
-      // Serial.println("Begin Failed");
+      oled.println("Begin Failed");
     } else if (error == OTA_CONNECT_ERROR) {
-      // Serial.println("Connect Failed");
+      oled.println("Connect Failed");
     } else if (error == OTA_RECEIVE_ERROR) {
-      // Serial.println("Receive Failed");
+      oled.println("Receive Failed");
     } else if (error == OTA_END_ERROR) {
-      // Serial.println("End Failed");
+      oled.println("End Failed");
     }
   });
   ArduinoOTA.begin();
@@ -177,6 +186,7 @@ void setup() {
   // Discover Elevator Controller
   while (MDNS.queryService("elev-ctrl", "udp") == 0) {
     oled.println(F("find elev-ctrl"));
+    ArduinoOTA.handle();
     delay(1000);
   }
   controllerHostname = MDNS.hostname(0);
@@ -238,14 +248,33 @@ void setup() {
 
   /* Port Expander (MCP23008) */
   mcp.begin(0); // 0x20
+  
   mcp.pinMode(0, INPUT); // Down Button
   mcp.pullUp(0, HIGH);  // turn on a 100K pullup internally
+  
   mcp.pinMode(1, OUTPUT);  // Down Acceptance Light
+  mcp.digitalWrite(1, LOW);
+  
   mcp.pinMode(2, INPUT); // Up Button
   mcp.pullUp(2, HIGH);  // turn on a 100K pullup internally
+  
   mcp.pinMode(3, OUTPUT);  // Up Acceptance Light
+  mcp.digitalWrite(3, LOW);
+
+#ifdef FRONT_DOOR
   mcp.pinMode(4, OUTPUT);  // Down Lanturn
+  mcp.digitalWrite(4, LOW);
+  
   mcp.pinMode(5, OUTPUT);  // Up Lanturn
+  mcp.digitalWrite(5, LOW);
+#endif
+#ifdef REAR_DOOR
+  mcp.pinMode(6, OUTPUT);  // Door Frame
+  mcp.digitalWrite(6, HIGH);
+  
+  mcp.pinMode(7, OUTPUT);  // Door Frame
+  mcp.digitalWrite(7, HIGH);
+#endif
 
   // Wait to view display
   delay(2000);
@@ -322,11 +351,13 @@ void loop() {
   }
   else if (doorState == DoorState::Opening || doorState == DoorState::Reopening) {
     if (stopped || 
-        encoderPosition > OPEN_POSITION || // Door passed jam - wait
-        abs(positionCorrection) > 128) { // Door is being pushed or pulled - wait
-        
-      //digitalWrite(4, LOW); // Turn on EL wire
-      //digitalWrite(5, LOW); // Turn on EL wire
+      encoderPosition > OPEN_POSITION || // Door passed jam - wait
+      abs(positionCorrection) > 128) { // Door is being pushed or pulled - wait
+
+#ifdef REAR_DOOR
+      mcp.digitalWrite(6, HIGH); // Turn off EL wire
+      mcp.digitalWrite(7, HIGH); // Turn off EL wire
+#endif
       
       if(doorState == DoorState::Reopening) {
         waitDoor(DOOR_DWELL_2);
@@ -337,8 +368,12 @@ void loop() {
   }
   else if (doorState == DoorState::Closed) {
     if (openDoorRequested) {
-      //digitalWrite(4, HIGH); // Turn on EL wire
-      //digitalWrite(5, HIGH); // Turn on EL wire
+
+#ifdef REAR_DOOR
+      mcp.digitalWrite(6, LOW); // Turn on EL wire
+      mcp.digitalWrite(7, LOW); // Turn on EL wire
+#endif
+      
       openDoor();
     }
   }
@@ -568,19 +603,19 @@ void receiveOSC(){
       oled.print(F("recv: "));
       oled.println(buffer);
       
-      msgIn.route("/call/up",receiveCallUp);
-      msgIn.route("/call/down",receiveCallDown);
+      msgIn.route("/call/acceptance",receiveCallAcceptance);
       msgIn.route("/door/open",receiveDoorOpen);
     }
   }
 }
 
-void receiveCallUp(OSCMessage &msg, int addrOffset){
-  mcp.digitalWrite(3, (msg.getInt(0) == 1) ? HIGH : LOW); // UP
-}
-
-void receiveCallDown(OSCMessage &msg, int addrOffset){
-  mcp.digitalWrite(1, (msg.getInt(0) == 1) ? HIGH : LOW); // Down
+void receiveCallAcceptance(OSCMessage &msg, int addrOffset){
+  int length = msg.getDataLength(0);
+  char str[length];
+  msg.getString(0,str,length);
+  
+  mcp.digitalWrite(3, (strcmp("up", str) == 0) ? HIGH : LOW); // UP
+  mcp.digitalWrite(1, (strcmp("down", str) == 0) ? HIGH : LOW); // Down
 }
 
 void receiveDoorOpen(OSCMessage &msg, int addrOffset){

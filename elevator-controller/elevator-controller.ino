@@ -40,7 +40,7 @@ CallState lastCallState = CallState::None;
 
 enum class DoorState {Unknown, Open, Closed};
 static const char *DoorStateString[] = {"Unknown", "Open", "Closed"};
-DoorState doorState = DoorState::Unknown;
+DoorState doorState = DoorState::Closed; // Default to closed
 
 unsigned long startTime;
 unsigned long currentTime;
@@ -64,7 +64,7 @@ WiFiUDP Udp;
 String frontDoorHostname;
 IPAddress frontDoorIp;
 unsigned int frontDoorPort;
-String rearDoorHostname[32];
+String rearDoorHostname;
 IPAddress rearDoorIp;
 unsigned int rearDoorPort;
 
@@ -157,8 +157,10 @@ void setup()
   delay(2000);
 
   // Discover Elevator Front Door
+  
   while (MDNS.queryService("elev-frnt-door", "udp") == 0) {
     oled.println(F("find elev-frnt-door"));
+    ArduinoOTA.handle();
     delay(1000);
   }
   frontDoorHostname = MDNS.hostname(0);
@@ -171,18 +173,19 @@ void setup()
   oled.println(frontDoorPort);
 
   // Discover Elevator Rear Door
-//  while (MDNS.queryService("elev-rear-door", "udp") == 0) {
-//    oled.println(F("mDNS Waiting for elev-rear-door..."));
-//    delay(1000);
-//  }
-//  rearDoorHostname = MDNS.hostname(0);
-//  rearDoorIp = MDNS.IP(0);
-//  rearDoorPort = MDNS.port(0);
-//
-//  oled.println(rearDoorHostname);
-//  oled.print(rearDoorIp);
-//  oled.print(F("""));
-//  oled.println(rearDoorPort);
+  while (MDNS.queryService("elev-rear-door", "udp") == 0) {
+    oled.println(F("find elev-rear-door"));
+    ArduinoOTA.handle();
+    delay(1000);
+  }
+  rearDoorHostname = MDNS.hostname(0);
+  rearDoorIp = MDNS.IP(0);
+  rearDoorPort = MDNS.port(0);
+
+  oled.println(rearDoorHostname);
+  oled.print(rearDoorIp);
+  oled.print(F(":"));
+  oled.println(rearDoorPort);
 
   /* Port Expander (MCP23017) */
   mcp0.begin(0); // 0x20
@@ -190,26 +193,62 @@ void setup()
 
   // Floor indicator
   mcp0.pinMode(0, OUTPUT); // UP
+  mcp0.digitalWrite(0, LOW);
+  
   mcp0.pinMode(1, OUTPUT); // B
+  mcp0.digitalWrite(1, LOW);
+  
   mcp0.pinMode(2, OUTPUT); // 1
+  mcp0.digitalWrite(2, LOW);
+  
   mcp0.pinMode(3, OUTPUT); // 2
+  mcp0.digitalWrite(3, LOW);
+  
   mcp0.pinMode(4, OUTPUT); // 3
+  mcp0.digitalWrite(4, LOW);
+  
   mcp0.pinMode(5, OUTPUT); // 4
+  mcp0.digitalWrite(5, LOW);
+  
   mcp0.pinMode(6, OUTPUT); // 5
+  mcp0.digitalWrite(6, LOW);
+  
   mcp0.pinMode(7, OUTPUT); // 6 Note: cannot be used as input due to bug.
+  mcp0.digitalWrite(7, LOW);
+  
   mcp0.pinMode(8, OUTPUT); // 7
+  mcp0.digitalWrite(8, LOW);
+  
   mcp0.pinMode(9, OUTPUT); // 8
+  mcp0.digitalWrite(9, LOW);
+  
   mcp0.pinMode(10, OUTPUT); // 9
+  mcp0.digitalWrite(10, LOW);
+  
   mcp0.pinMode(11, OUTPUT); // 10
+  mcp0.digitalWrite(11, LOW);
+  
   mcp0.pinMode(12, OUTPUT); // 11
+  mcp0.digitalWrite(12, LOW);
+  
   mcp0.pinMode(13, OUTPUT); // 12
+  mcp0.digitalWrite(13, LOW);
+  
   mcp0.pinMode(14, OUTPUT); // 13
+  mcp0.digitalWrite(14, LOW);
+  
   mcp0.pinMode(15, OUTPUT); // DOWN Note: cannot be used as input due to bug.
+  mcp0.digitalWrite(15, LOW);
 
   // Button Panel LEDs
   mcp1.pinMode(0, OUTPUT); // B
+  mcp1.digitalWrite(0, LOW);
+ 
   mcp1.pinMode(1, OUTPUT); // 1
+  mcp1.digitalWrite(1, LOW);
+   
   mcp1.pinMode(2, OUTPUT); // 13
+  mcp1.digitalWrite(2, LOW);
 
   // Button Panel Buttons
   mcp1.pinMode(3, INPUT); // Reopen
@@ -370,13 +409,18 @@ void openRearDoor() {
 }
 
 void updateCallAcceptance() {
-  OSCMessage upOSCMessage("/call/up");
-  upOSCMessage.add((callState == CallState::Up) ? 1 : 0);
-  sendFrontDoorOSCMessage(upOSCMessage);
-
-  OSCMessage downOSCMessage("/call/down");
-  downOSCMessage.add((callState == CallState::Down) ? 1 : 0);
-  sendFrontDoorOSCMessage(downOSCMessage);
+  OSCMessage acceptanceOSCMessage("/call/acceptance");
+  if (callState == CallState::Up) {
+    acceptanceOSCMessage.add("up");
+  }
+  else if (callState == CallState::Down) {
+    acceptanceOSCMessage.add("down");
+  }
+  else {
+    acceptanceOSCMessage.add("none");
+  }
+  
+  sendFrontDoorOSCMessage(acceptanceOSCMessage);
 }
 
 void sendFrontDoorOSCMessage(OSCMessage &msg) {
