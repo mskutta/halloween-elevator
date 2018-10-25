@@ -61,12 +61,18 @@ char hostname[17] = {0};
 
 /* OSC */
 WiFiUDP Udp;
+
 String frontDoorHostname;
 IPAddress frontDoorIp;
 unsigned int frontDoorPort;
+
 String rearDoorHostname;
 IPAddress rearDoorIp;
 unsigned int rearDoorPort;
+
+String qLabHostname;
+IPAddress qLabIp;
+unsigned int qLabPort;
 
 /* Port Expander */
 Adafruit_MCP23017 mcp0;
@@ -157,7 +163,6 @@ void setup()
   delay(2000);
 
   // Discover Elevator Front Door
-  
   while (MDNS.queryService("elev-frnt-door", "udp") == 0) {
     oled.println(F("find elev-frnt-door"));
     ArduinoOTA.handle();
@@ -186,6 +191,21 @@ void setup()
   oled.print(rearDoorIp);
   oled.print(F(":"));
   oled.println(rearDoorPort);
+
+  // Discover qLab
+  while (MDNS.queryService("qlab", "udp") == 0) {
+    oled.println(F("find qlab"));
+    ArduinoOTA.handle();
+    delay(1000);
+  }
+  qLabHostname = MDNS.hostname(0);
+  qLabIp = MDNS.IP(0);
+  qLabPort = MDNS.port(0);
+
+  oled.println(qLabHostname);
+  oled.print(qLabIp);
+  oled.print(F(":"));
+  oled.println(qLabPort);
 
   /* Port Expander (MCP23017) */
   mcp0.begin(0); // 0x20
@@ -284,21 +304,25 @@ void loop() {
       if (doorState == DoorState::Closed) {
         if (endFloor == 0) {
           oled.println(F("Go to basement"));
+          sendQLabOSCMessage("/cue/elevator.frontdoorclose/start");
           elevatorState = ElevatorState::Moving;
           startTime = currentTime;
           endTime = currentTime + 6000;
           startFloor = 1;
         } else if (endFloor == 13) {
           oled.println(F("Go to 13th floor"));
+          sendQLabOSCMessage("/cue/elevator.frontdoorclose/start");
           elevatorState = ElevatorState::Moving;
           startTime = currentTime;
           endTime = currentTime + 13000;
           startFloor = 1;
         } else if (callState == CallState::Up) {
+          sendQLabOSCMessage("/cue/elevator.openfrontdoorup/start");
           elevatorDirection = ElevatorDirection::Up;
           endFloor = 13;
           openFrontDoor();
         } else if (callState == CallState::Down) {
+          sendQLabOSCMessage("/cue/elevator.openfrontdoordown/start");
           elevatorDirection = ElevatorDirection::Down;
           endFloor = 0;
           openFrontDoor();
@@ -335,12 +359,14 @@ void loop() {
       elevatorState = ElevatorState::Stopped;
       currentFloor = endFloor;
       if (currentFloor == 0) {
+        sendQLabOSCMessage("/cue/elevator.openreardoor/start");
         elevatorDirection = ElevatorDirection::Up;
         openRearDoor();
       } else if (currentFloor == 1) {
         elevatorDirection = ElevatorDirection::Unknown;
         // Dont open door, Wait for call button or open button to be pressed
       } else if (currentFloor == 13) {
+        sendQLabOSCMessage("/cue/elevator.openreardoor/start");
         elevatorDirection = ElevatorDirection::Down;
         openRearDoor();
       }
@@ -442,6 +468,18 @@ void sendRearDoorOSCMessage(OSCMessage &msg) {
   oled.println(buffer);
   
   Udp.beginPacket(rearDoorIp, rearDoorPort);
+  msg.send(Udp);
+  Udp.endPacket();
+  msg.empty();
+}
+
+void sendQLabOSCMessage(const char* address) {
+  OSCMessage msg(address);
+
+  oled.print(F("send qlab:"));
+  oled.println(address);
+
+  Udp.beginPacket(qLabIp, qLabPort);
   msg.send(Udp);
   Udp.endPacket();
   msg.empty();

@@ -39,13 +39,13 @@ const char* WIFI_PASSWORD = "ymnUWpdPpP8V"; // network password
 const unsigned int OSC_PORT = 53000;
 
 const int CLOSED_POSITION = 0;
-const int OPEN_POSITION = 18650;
+const int OPEN_POSITION = 18600; // 18650
 const int MAX_CONTIGUOUS_RANGE_ERROR_COUNT = 1;
 
 const int HIGH_ACCURACY_TIMING_BUDGET = 200000;
 const int HIGH_SPEED_TIMING_BUDGET = 26000; // 20000 min
 
-const unsigned long DOOR_DWELL_1 = 3000;
+const unsigned long DOOR_DWELL_1 = 5000; // 3000
 const unsigned long DOOR_DWELL_2 = 2000;
 
 //#define XSHUT_pin3 not required for address change
@@ -343,7 +343,7 @@ void loop() {
     else if ((range == -1 && encoderPosition > 1000) || // beam break - reopen
               positionCorrection < -64 || // door is being pushed - reopen
               openDoorRequested) { // open door requested
-      reopenDoor();
+      openDoor(true);
     }
     else if (positionCorrection > 64) { // door is being pulled - wait
       waitDoor(DOOR_DWELL_2);
@@ -351,8 +351,8 @@ void loop() {
   }
   else if (doorState == DoorState::Opening || doorState == DoorState::Reopening) {
     if (stopped || 
-      encoderPosition > OPEN_POSITION || // Door passed jam - wait
-      abs(positionCorrection) > 128) { // Door is being pushed or pulled - wait
+      encoderPosition > OPEN_POSITION) { // Door passed jam - wait
+      //abs(positionCorrection) > 128) { // Door is being pushed or pulled - wait
 
 #ifdef REAR_DOOR
       mcp.digitalWrite(6, HIGH); // Turn off EL wire
@@ -374,7 +374,7 @@ void loop() {
       mcp.digitalWrite(7, LOW); // Turn on EL wire
 #endif
       
-      openDoor();
+      openDoor(false);
     }
   }
   
@@ -402,7 +402,7 @@ void closeDoor() {
   
   tic.energize();
   tic.setStepMode(TicStepMode::Microstep8);
-  tic.setCurrentLimit(750);
+  tic.setCurrentLimit(900); // 750 is the minimum required to mostly open the door
   tic.setMaxSpeed(30000000); // ~11.25 revolutions (18000 steps) to open door. 2 second open time = 9000 steps/sec
   tic.setMaxAccel(100000); // 10000 steps/sec
   tic.setMaxDecel(100000); // 10000 steps/sec
@@ -413,12 +413,7 @@ void closeDoor() {
   doorState = DoorState::Closing;
 }
 
-void reopenDoor() {
-  openDoor();
-  doorState = DoorState::Reopening;
-}
-
-void openDoor() {
+void openDoor(bool reopen) {
   // Allow the door to settle
   if (tic.getEnergized()) {
     tic.deenergize();
@@ -428,14 +423,23 @@ void openDoor() {
   tic.energize();
   tic.setStepMode(TicStepMode::Microstep8);
   tic.setCurrentLimit(1500);
+#ifdef FRONT_DOOR
   tic.setMaxSpeed(90000000); // ~11.25 revolutions (18000 steps) to open door. 2 second open time = 9000 steps/sec
+#endif
+#ifdef REAR_DOOR
+  if (reopen == true) {
+    tic.setMaxSpeed(90000000);
+  } else {
+    tic.setMaxSpeed(20000000);
+  }
+#endif
   tic.setMaxAccel(400000); // 10000 steps/sec
   tic.setMaxDecel(700000); // 10000 steps/sec
   tic.haltAndSetPosition(getEncoderPosition());
   tic.setTargetPosition(OPEN_POSITION);
   tic.exitSafeStart();
-  
-  doorState = DoorState::Opening;
+
+  doorState = (reopen == true) ? DoorState::Reopening : DoorState::Opening;
 }
 
 void waitDoor(unsigned long timeout) {
