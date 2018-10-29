@@ -79,6 +79,8 @@ char hostname[21] = {0};
 
 /* OSC */
 WiFiUDP Udp;
+OSCErrorCode error;
+
 String controllerHostname;
 IPAddress controllerIp;
 unsigned int controllerPort;
@@ -596,19 +598,23 @@ void ai0() {
 }
 
 void receiveOSC(){
-  OSCMessage msgIn;
+  OSCMessage msg;
   int size;
   if((size = Udp.parsePacket())>0){
     while(size--)
-      msgIn.fill(Udp.read());
-    if(!msgIn.hasError()){
+      msg.fill(Udp.read());
+    if(!msg.hasError()){
       char buffer [32];
-      msgIn.getAddress(buffer);
+      msg.getAddress(buffer);
       oled.print(F("recv: "));
       oled.println(buffer);
       
-      msgIn.route("/call/acceptance",receiveCallAcceptance);
-      msgIn.route("/door/open",receiveDoorOpen);
+      msg.route("/call/acceptance",receiveCallAcceptance);
+      msg.route("/door/open",receiveDoorOpen);
+    } else {
+      error = msg.getError();
+      oled.print(F("recv error: "));
+      oled.println(error);
     }
   }
 }

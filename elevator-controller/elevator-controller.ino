@@ -61,6 +61,7 @@ char hostname[17] = {0};
 
 /* OSC */
 WiFiUDP Udp;
+OSCErrorCode error;
 
 String frontDoorHostname;
 IPAddress frontDoorIp;
@@ -292,7 +293,7 @@ void loop() {
         oled.println(F("Return to 1st floor"));
         elevatorState = ElevatorState::Moving;
         startTime = currentTime;
-        endTime = currentTime + 20000;
+        endTime = currentTime + 22000;
       } 
       else if (doorState == DoorState::Open) {
         if (reopenPressed == true) {
@@ -307,14 +308,14 @@ void loop() {
           sendQLabOSCMessage("/cue/elevator.frontdoorclose/start");
           elevatorState = ElevatorState::Moving;
           startTime = currentTime;
-          endTime = currentTime + 6000;
+          endTime = currentTime + 8000;
           startFloor = 1;
         } else if (endFloor == 13) {
           oled.println(F("Go to 13th floor"));
           sendQLabOSCMessage("/cue/elevator.frontdoorclose/start");
           elevatorState = ElevatorState::Moving;
           startTime = currentTime;
-          endTime = currentTime + 13000;
+          endTime = currentTime + 26000;
           startFloor = 1;
         } else if (callState == CallState::Up) {
           sendQLabOSCMessage("/cue/elevator.openfrontdoorup/start");
@@ -342,7 +343,7 @@ void loop() {
         oled.println(F("Return to 1st floor"));
         elevatorState = ElevatorState::Moving;
         startTime = currentTime;
-        endTime = currentTime + 13000;
+        endTime = currentTime + 4000;
       }
       else if (doorState == DoorState::Open) {
         if (reopenPressed == true) {
@@ -386,20 +387,24 @@ void loop() {
 }
 
 void receiveOSC(){
-  OSCMessage msgIn;
+  OSCMessage msg;
   int size;
-  if((size = Udp.parsePacket())>0){
+  if((size = Udp.parsePacket()) > 0){
     while(size--)
-      msgIn.fill(Udp.read());
-    if(!msgIn.hasError()){
+      msg.fill(Udp.read());
+    if(!msg.hasError()){
       char buffer [32];
-      msgIn.getAddress(buffer);
+      msg.getAddress(buffer);
       oled.print(F("recv: "));
       oled.println(buffer);
       
-      msgIn.route("/call/up",receiveCallUp);
-      msgIn.route("/call/down",receiveCallDown);
-      msgIn.route("/door/closed",receiveDoorClosed);
+      msg.route("/call/up",receiveCallUp);
+      msg.route("/call/down",receiveCallDown);
+      msg.route("/door/closed",receiveDoorClosed);
+    } else {
+      error = msg.getError();
+      oled.print(F("recv error: "));
+      oled.println(error);
     }
   }
 }
