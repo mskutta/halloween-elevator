@@ -4,6 +4,10 @@
 #include <WiFiUdp.h> // OSC over UDP
 #include <ArduinoOTA.h> // Updates over the air
 
+// Communication
+#include <ESP8266WebServer.h>I
+#include <ESP8266HTTPClient.h> 
+
 // OSC
 #include <OSCMessage.h> // for sending OSC messages
 #include <OSCBundle.h> // for receiving OSC messages
@@ -58,6 +62,9 @@ SSD1306AsciiWire oled;
 
 /* WIFI */
 char hostname[17] = {0};
+
+/* Web Server */
+ESP8266WebServer server(80);
 
 /* OSC */
 WiFiUDP Udp;
@@ -208,6 +215,15 @@ void setup()
   oled.print(F(":"));
   oled.println(qLabPort);
 
+  /* Web Server */
+  server.on("/call/up", HTTP_GET, handleCallUp);
+  server.on("/call/down", HTTP_GET, handleCallDown);
+  server.on("/door/closed", HTTP_GET, handleDoorClosed);
+  server.on("/", HTTP_GET, handleRoot);
+  server.onNotFound(handleNotFound);
+  server.begin();
+  oled.println(F("HTTP server started"));
+
   /* Port Expander (MCP23017) */
   mcp0.begin(0); // 0x20
   mcp1.begin(1); // 0x21
@@ -280,6 +296,7 @@ void loop() {
   currentTime = millis();
 
   ArduinoOTA.handle();
+  server.handleClient();
   receiveOSC();
 
   // Read buttons
@@ -421,61 +438,79 @@ void receiveDoorClosed(OSCMessage &msg, int addrOffset){
   doorState = DoorState::Closed;
 }
 
+void returnOK() {
+  server.send(200, "text/plain", "OK");
+}
+
+void handleNotFound() {
+  server.send(404, "text/plain", "Not Found");
+}
+
+void handleRoot() {
+  server.send(200, "text/plain", hostname);
+}
+
+void handleCallUp() {
+  callState = CallState::Up;
+  returnOK();
+}
+
+void handleCallDown() {
+  callState = CallState::Down;
+  returnOK();
+}
+
+void handleDoorClosed() {
+  doorState = DoorState::Closed;
+  returnOK();
+}
+
 void openFrontDoor() {
   doorState = DoorState::Open;
-  OSCMessage openDoorMsg("/door/open");
-  if (elevatorDirection == ElevatorDirection::Up) {
-    openDoorMsg.add("up");
-  }
-  else if (elevatorDirection == ElevatorDirection::Up) {
-    openDoorMsg.add("down");
-  }
-  sendFrontDoorOSCMessage(openDoorMsg);
+  requestFrontDoor("/door/open");
 }
 
 void openRearDoor() {
   doorState = DoorState::Open;
-  OSCMessage msgOut("/door/open");
-  sendRearDoorOSCMessage(msgOut);
+  requestRearDoor("/door/open");
 }
 
 void updateCallAcceptance() {
-  OSCMessage acceptanceOSCMessage("/call/acceptance");
   if (callState == CallState::Up) {
-    acceptanceOSCMessage.add("up");
+    requestFrontDoor("/call/up");
   }
   else if (callState == CallState::Down) {
-    acceptanceOSCMessage.add("down");
+    requestFrontDoor("/call/down");
   }
   else {
-    acceptanceOSCMessage.add("none");
+    requestFrontDoor("/call/none");
   }
-  
-  sendFrontDoorOSCMessage(acceptanceOSCMessage);
 }
 
-void sendFrontDoorOSCMessage(OSCMessage &msg) {
-  char buffer [32];
-  msg.getAddress(buffer);
-  oled.print(F("send front:"));
-  oled.println(buffer);
-  
-  Udp.beginPacket(frontDoorIp, frontDoorPort);
-  msg.send(Udp);
-  Udp.endPacket();
-  msg.empty();
+void requestFrontDoor(const char* command) {
+  HTTPClient http;
+  http.begin(frontDoorIp.toString(), 80, command);  //Specify request destination
+  int httpCode = http.GET();
+  if (httpCode > 0) { //Check the returning code
+    oled.print(F("sent frnt: "));
+  } else {
+    oled.print(F("fail frnt: "));
+  }
+  oled.println(command);  
+  http.end(); 
 }
 
-void sendRearDoorOSCMessage(OSCMessage &msg) {
-  char buffer [32];
-  msg.getAddress(buffer);
-  oled.print(F("send rear:"));
-  oled.println(buffer);
-  
-  Udp.beginPacket(rearDoorIp, rearDoorPort);
-  msg.send(Udp);
-  Udp.endPacket();
-  msg.empty();
+void requestRearDoor(const char* command) {
+  HTTPClient http;
+  http.begin(rearDoorIp.toString(), 80, command);  //Specify request destination
+  int httpCode = http.GET();
+  if (httpCode > 0) { //Check the returning code
+    oled.print(F("sent rear: "));
+  } else {
+    oled.print(F("fail rear: "));
+  }
+  oled.println(command);  
+  http.end(); 
 }
 
 void sendQLabOSCMessage(const char* address) {

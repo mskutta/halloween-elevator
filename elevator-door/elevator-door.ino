@@ -6,6 +6,10 @@
 #include <WiFiUdp.h> // OSC over UDP
 #include <ArduinoOTA.h> // Updates over the air
 
+// Communication
+#include <ESP8266WebServer.h> // Support for REST API
+#include <ESP8266HTTPClient.h> 
+
 // OSC
 #include <OSCMessage.h> // for sending OSC messages
 #include <OSCBundle.h> // for receiving OSC messages
@@ -76,6 +80,9 @@ uint8_t rowHeight; // pixels per row.
 
 /* WIFI */
 char hostname[21] = {0};
+
+/* Web Server */
+ESP8266WebServer server(80);
 
 /* OSC */
 WiFiUDP Udp;
@@ -199,6 +206,16 @@ void setup() {
   oled.print(controllerIp);
   oled.print(F(":"));
   oled.println(controllerPort);
+
+  /* Web Server */
+  server.on("/call/up", HTTP_GET, handleCallUp);
+  server.on("/call/down", HTTP_GET, handleCallDown);
+  server.on("/call/none", HTTP_GET, handleCallNone);
+  server.on("/door/open", HTTP_GET, handleDoorOpen);
+  server.on("/", HTTP_GET, handleRoot);
+  server.onNotFound(handleNotFound);
+  server.begin();
+  oled.println(F("HTTP server started"));
   
   /* TIC */
   // Set the TIC product
@@ -287,15 +304,15 @@ void setup() {
 
 void loop() {
   ArduinoOTA.handle();
+  server.handleClient();
   receiveOSC();
 
   // Read buttons
   if (mcp.digitalRead(0) == LOW) { // Down Button
-    sendCallDown();
-    
+    requestController("/call/down");
   }
   if (mcp.digitalRead(2) == LOW) { // Up Button
-    sendCallUp();
+    requestController("/call/up");
   }
   
   // Get range and position info
@@ -338,9 +355,7 @@ void loop() {
   else if (doorState == DoorState::Closing) {
     if (stopped) {
       doorState = DoorState::Closed;
-
-      OSCMessage closedOSCMessage("/door/closed");
-      sendControllerOSCMessage(closedOSCMessage);
+      requestController("/door/closed");
     }
     else if ((range == -1 && encoderPosition > 1000) || // beam break - reopen
               positionCorrection < -64 || // door is being pushed - reopen
@@ -641,24 +656,52 @@ void receiveDoorOpen(OSCMessage &msg, int addrOffset){
   doorOpenReceived = true;
 }
 
-void sendCallUp() {
-  OSCMessage msgOut("/call/up");
-  sendControllerOSCMessage(msgOut);
+void returnOK() {
+  server.send(200, "text/plain", "OK");
 }
 
-void sendCallDown() {
-  OSCMessage msgOut("/call/down");
-  sendControllerOSCMessage(msgOut);
+void handleNotFound() {
+  server.send(404, "text/plain", "Not Found");
 }
 
-void sendControllerOSCMessage(OSCMessage &msg) {
-  char buffer [32];
-  msg.getAddress(buffer);
-  oled.print(F("send: "));
-  oled.println(buffer);
-  
-  Udp.beginPacket(controllerIp, controllerPort);
-  msg.send(Udp);
-  Udp.endPacket();
-  msg.empty();
+void handleRoot() {
+  server.send(200, "text/plain", "Hello world");
+}
+
+void handleCallUp() {
+  mcp.digitalWrite(3, HIGH); // UP
+  mcp.digitalWrite(1, LOW); // Down
+  returnOK();
+}
+
+void handleCallDown() {
+  mcp.digitalWrite(3, LOW); // UP
+  mcp.digitalWrite(1, HIGH); // Down
+  returnOK();
+}
+
+void handleCallNone() {
+  mcp.digitalWrite(3, LOW); // UP
+  mcp.digitalWrite(1, LOW); // Down
+  returnOK();
+}
+
+void handleDoorOpen() {
+  mcp.digitalWrite(3, LOW); // UP
+  mcp.digitalWrite(1, LOW); // Down
+  doorOpenReceived = true;
+  returnOK();
+}
+
+void requestController(const char* command) {
+  HTTPClient http;
+  http.begin(controllerIp.toString(), 80, command);  //Specify request destination
+  int httpCode = http.GET();
+  if (httpCode > 0) { //Check the returning code
+    oled.print(F("sent: "));
+  } else {
+    oled.print(F("fail: "));
+  }
+  oled.println(command);  
+  http.end(); 
 }
