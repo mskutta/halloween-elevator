@@ -24,6 +24,8 @@ const char* WIFI_SSID = "skutta-net"; // network SSID (name)
 const char* WIFI_PASSWORD = "ymnUWpdPpP8V"; // network password
 const unsigned int OSC_PORT = 53000;
 
+const unsigned long OSC_SEND_INTERVAL = 200; // 200 ms
+
 /* Variables */
 enum class ElevatorState {Unknown, Stopped, Moving};
 static const char *ElevatorStateString[] = {"Unknown", "Stopped", "Moving"};
@@ -40,7 +42,13 @@ CallState lastCallState = CallState::None;
 
 enum class DoorState {Unknown, Open, Closed};
 static const char *DoorStateString[] = {"Unknown", "Open", "Closed"};
-DoorState doorState = DoorState::Closed; // Default to closed
+DoorState frontDoorState = DoorState::Closed; // Default to closed
+DoorState rearDoorState = DoorState::Closed; // Default to closed
+
+boolean sendFrontDoorOpen = false;
+boolean sendRearDoorOpen = false;
+
+unsigned long oscSendTime;
 
 unsigned long startTime;
 unsigned long currentTime;
@@ -49,9 +57,6 @@ unsigned long endTime;
 int startFloor = 1;
 int currentFloor = 1;
 int endFloor = 1;
-
-bool frontDoorClosed = false;
-bool rearDoorClosed = false;
 
 /* Display */
 SSD1306AsciiWire oled;
@@ -286,23 +291,23 @@ void loop() {
   boolean reopenPressed = (mcp1.digitalRead(3) == LOW); // Reopen
 
   if (elevatorState == ElevatorState::Stopped) {
-    if (currentFloor == 0) {
+    if (currentFloor == 0) { // Basement (Rear Door)
       startFloor = 0;
       endFloor = 1;
-      if (doorState == DoorState::Closed) {
+      if (sendRearDoorOpen == false && rearDoorState == DoorState::Closed) {
         oled.println(F("Return to 1st floor"));
         elevatorState = ElevatorState::Moving;
         startTime = currentTime;
         endTime = currentTime + 22000;
       } 
-      else if (doorState == DoorState::Open) {
+      else if (rearDoorState == DoorState::Open) {
         if (reopenPressed == true) {
-          openRearDoor();
+          openRearDoor(); // Send immediately, do not use timer loop
         }
       }
     }
-    else if (currentFloor == 1) {
-      if (doorState == DoorState::Closed) {
+    else if (currentFloor == 1) { // First Floor (Front Door)
+      if (sendFrontDoorOpen == false && frontDoorState == DoorState::Closed) {
         if (endFloor == 0) {
           oled.println(F("Go to basement"));
           sendQLabOSCMessage("/cue/elevator.frontdoorclose/start");
@@ -321,33 +326,33 @@ void loop() {
           sendQLabOSCMessage("/cue/elevator.openfrontdoorup/start");
           elevatorDirection = ElevatorDirection::Up;
           endFloor = 13;
-          openFrontDoor();
+          sendFrontDoorOpen = true;
         } else if (callState == CallState::Down) {
           sendQLabOSCMessage("/cue/elevator.openfrontdoordown/start");
           elevatorDirection = ElevatorDirection::Down;
           endFloor = 0;
-          openFrontDoor();
+          sendFrontDoorOpen = true;
         }
       }
-      else if (doorState == DoorState::Open) {
+      else if (frontDoorState == DoorState::Open) {
         if (reopenPressed == true || callState != CallState::None) {
-          openFrontDoor();
+          openFrontDoor(); // Send immediately, do not use timer loop
         }
       }
       callState = CallState::None;
     }
-    else if (currentFloor == 13) {
+    else if (currentFloor == 13) { // 13th Floor (Rear Door)
       startFloor = 13;
       endFloor = 1;
-      if (doorState == DoorState::Closed) {
+      if (sendRearDoorOpen == false && rearDoorState == DoorState::Closed) {
         oled.println(F("Return to 1st floor"));
         elevatorState = ElevatorState::Moving;
         startTime = currentTime;
         endTime = currentTime + 4000;
       }
-      else if (doorState == DoorState::Open) {
+      else if (rearDoorState == DoorState::Open) {
         if (reopenPressed == true) {
-          openRearDoor();
+          openRearDoor(); // Send immediately, do not use timer loop
         }
       }
     }
@@ -362,22 +367,41 @@ void loop() {
       if (currentFloor == 0) {
         sendQLabOSCMessage("/cue/elevator.openreardoor/start");
         elevatorDirection = ElevatorDirection::Up;
-        openRearDoor();
+        sendRearDoorOpen = true;
       } else if (currentFloor == 1) {
         elevatorDirection = ElevatorDirection::Unknown;
         // Dont open door, Wait for call button or open button to be pressed
       } else if (currentFloor == 13) {
         sendQLabOSCMessage("/cue/elevator.openreardoor/start");
         elevatorDirection = ElevatorDirection::Down;
-        openRearDoor();
+        sendRearDoorOpen = true;
       }
     }
+  }
+
+  // Clear Send Flags
+  if (frontDoorState == DoorState::Open){
+    sendFrontDoorOpen = false;
+  }
+  if (rearDoorState == DoorState::Open){
+    sendRearDoorOpen = false;
+  }
+    
+  // Send OSC Messages
+  if (millis() > oscSendTime) {
+    if (sendFrontDoorOpen == true) {
+      openFrontDoor(); // Send Open Front Door
+    }
+    if (sendRearDoorOpen == true) {
+      openRearDoor(); // Send Open Rear Door
+    }
+    updateCallAcceptance();
+    oscSendTime = millis() + OSC_SEND_INTERVAL;
   }
 
   if (callState != lastCallState) {
     oled.print(F("Call State: "));
     oled.println(CallStateString[(int)callState]);
-    updateCallAcceptance();
     lastCallState = callState;
   }
 
@@ -400,7 +424,10 @@ void receiveOSC(){
       
       msg.route("/call/up",receiveCallUp);
       msg.route("/call/down",receiveCallDown);
-      msg.route("/door/closed",receiveDoorClosed);
+      msg.route("/door/closed/front",receiveDoorClosedFront);
+      msg.route("/door/closed/rear",receiveDoorClosedRear);
+      msg.route("/door/open/front",receiveDoorOpenFront);
+      msg.route("/door/open/rear",receiveDoorOpenRear);
     } else {
       error = msg.getError();
       oled.print(F("recv error: "));
@@ -417,61 +444,56 @@ void receiveCallDown(OSCMessage &msg, int addrOffset){
   callState = CallState::Down;
 }
 
-void receiveDoorClosed(OSCMessage &msg, int addrOffset){
-  doorState = DoorState::Closed;
+void receiveDoorClosedFront(OSCMessage &msg, int addrOffset){
+  frontDoorState = DoorState::Closed;
+}
+
+void receiveDoorClosedRear(OSCMessage &msg, int addrOffset){
+  rearDoorState = DoorState::Closed;
+}
+
+void receiveDoorOpenFront(OSCMessage &msg, int addrOffset){
+  frontDoorState = DoorState::Open;
+}
+
+void receiveDoorOpenRear(OSCMessage &msg, int addrOffset){
+  rearDoorState = DoorState::Open;
 }
 
 void openFrontDoor() {
-  doorState = DoorState::Open;
-  OSCMessage openDoorMsg("/door/open");
-  if (elevatorDirection == ElevatorDirection::Up) {
-    openDoorMsg.add("up");
-  }
-  else if (elevatorDirection == ElevatorDirection::Up) {
-    openDoorMsg.add("down");
-  }
-  sendFrontDoorOSCMessage(openDoorMsg);
+  sendFrontDoorOSCMessage("/door/open");
 }
 
 void openRearDoor() {
-  doorState = DoorState::Open;
-  OSCMessage msgOut("/door/open");
-  sendRearDoorOSCMessage(msgOut);
+  sendRearDoorOSCMessage("/door/open");
 }
 
 void updateCallAcceptance() {
-  OSCMessage acceptanceOSCMessage("/call/acceptance");
   if (callState == CallState::Up) {
-    acceptanceOSCMessage.add("up");
+    sendFrontDoorOSCMessage("/call/up");
+  } else if (callState == CallState::Down) {
+    sendFrontDoorOSCMessage("/call/down");
+  } else {
+    sendFrontDoorOSCMessage("/call/none");
   }
-  else if (callState == CallState::Down) {
-    acceptanceOSCMessage.add("down");
-  }
-  else {
-    acceptanceOSCMessage.add("none");
-  }
-  
-  sendFrontDoorOSCMessage(acceptanceOSCMessage);
 }
 
-void sendFrontDoorOSCMessage(OSCMessage &msg) {
-  char buffer [32];
-  msg.getAddress(buffer);
+void sendFrontDoorOSCMessage(const char* address) {
   oled.print(F("send front:"));
-  oled.println(buffer);
-  
+  oled.println(address);
+
+  OSCMessage msg(address);
   Udp.beginPacket(frontDoorIp, frontDoorPort);
   msg.send(Udp);
   Udp.endPacket();
   msg.empty();
 }
 
-void sendRearDoorOSCMessage(OSCMessage &msg) {
-  char buffer [32];
-  msg.getAddress(buffer);
+void sendRearDoorOSCMessage(const char* address) {
   oled.print(F("send rear:"));
-  oled.println(buffer);
-  
+  oled.println(address);
+
+  OSCMessage msg(address);
   Udp.beginPacket(rearDoorIp, rearDoorPort);
   msg.send(Udp);
   Udp.endPacket();
@@ -479,11 +501,10 @@ void sendRearDoorOSCMessage(OSCMessage &msg) {
 }
 
 void sendQLabOSCMessage(const char* address) {
-  OSCMessage msg(address);
-
   oled.print(F("send qlab:"));
   oled.println(address);
 
+  OSCMessage msg(address);
   Udp.beginPacket(qLabIp, qLabPort);
   msg.send(Udp);
   Udp.endPacket();

@@ -1,5 +1,5 @@
-//#define FRONT_DOOR 1
-#define REAR_DOOR 1
+#define FRONT_DOOR 1
+//#define REAR_DOOR 1
 
 #include <ESP8266WiFi.h> // WIFI support
 #include <ESP8266mDNS.h> // For network discovery
@@ -29,9 +29,11 @@
 /* Constants */
 #ifdef FRONT_DOOR
 const char* ESP_NAME = "elev-frnt-door";
+const char* DOOR_NAME = "front";
 #endif
 #ifdef REAR_DOOR
 const char* ESP_NAME = "elev-rear-door";
+const char* DOOR_NAME = "rear";
 #endif
 
 const char* WIFI_SSID = "skutta-net"; // network SSID (name)
@@ -56,6 +58,8 @@ const int SENSOR1_ADDRESS = 43;
 const int SENSOR2_ADDRESS = 42;
 //const int SENSOR3_ADDRESS = 41; // Default
 
+const unsigned long OSC_MESSAGE_SEND_INTERVAL = 200; // 200 ms
+
 /* Variables */
 enum class DoorState {Unknown, Calibrating, Closed, Closing, Manual, Open, Opening, Reopening, Waiting};
 static const char *DoorStateString[] = {"Unknown", "Calibrating", "Closed", "Closing", "Manual", "Open", "Opening", "Reopening", "Waiting"};
@@ -69,6 +73,7 @@ volatile int encoderCount = 0; //This variable will increase or decrease dependi
 int lastEncoderPosition = 0;
 
 bool doorOpenReceived = false;
+unsigned long oscSendTime;
 
 /* Display */
 SSD1306AsciiWire oled;
@@ -291,11 +296,10 @@ void loop() {
 
   // Read buttons
   if (mcp.digitalRead(0) == LOW) { // Down Button
-    sendCallDown();
-    
+    sendCallDown(); // Send immediately, do not use timer loop
   }
   if (mcp.digitalRead(2) == LOW) { // Up Button
-    sendCallUp();
+    sendCallUp(); // Send immediately, do not use timer loop
   }
   
   // Get range and position info
@@ -338,9 +342,6 @@ void loop() {
   else if (doorState == DoorState::Closing) {
     if (stopped) {
       doorState = DoorState::Closed;
-
-      OSCMessage closedOSCMessage("/door/closed");
-      sendControllerOSCMessage(closedOSCMessage);
     }
     else if ((range == -1 && encoderPosition > 1000) || // beam break - reopen
               positionCorrection < -64 || // door is being pushed - reopen
@@ -370,14 +371,22 @@ void loop() {
   }
   else if (doorState == DoorState::Closed) {
     if (openDoorRequested) {
-
 #ifdef REAR_DOOR
       mcp.digitalWrite(6, LOW); // Turn on EL wire
       mcp.digitalWrite(7, LOW); // Turn on EL wire
 #endif
-      
       openDoor(false);
     }
+  }
+
+  // Send door state once every [interval].  This adds reliability.
+  if (millis() > oscSendTime) {
+    if (doorState == DoorState::Closed) {
+      sendControllerOSCMessage(strcat("/door/closed/", DOOR_NAME));
+    } else {
+      sendControllerOSCMessage(strcat("/door/open/", DOOR_NAME));
+    }
+    oscSendTime = millis() + OSC_MESSAGE_SEND_INTERVAL;
   }
   
   // Print the door state
@@ -385,10 +394,6 @@ void loop() {
     oled.print(F("door: "));
     oled.println(DoorStateString[(int)doorState]);
   }
-  
-  // Door Dwell 1 is the time, in seconds, that the doors will wait until closing if the passenger detection beam across the door entrance is not broken.
-  // Door Dwell 2 is the time, in seconds, that the doors will wait until closing after the broken passenger detection beams are cleared.
-  // Door Dwell 1 is automatically set to 3 seconds, and Door Dwell 2 to 2 seconds when you are using Standard mode
 
   lastDoorState = doorState;
   lastEncoderPosition = encoderPosition;
@@ -609,7 +614,9 @@ void receiveOSC(){
       oled.print(F("recv: "));
       oled.println(buffer);
       
-      msg.route("/call/acceptance",receiveCallAcceptance);
+      msg.route("/call/up",receiveCallUp);
+      msg.route("/call/down",receiveCallDown);
+      msg.route("/call/none",receiveCallNone);
       msg.route("/door/open",receiveDoorOpen);
     } else {
       error = msg.getError();
@@ -619,44 +626,41 @@ void receiveOSC(){
   }
 }
 
-void receiveCallAcceptance(OSCMessage &msg, int addrOffset){
-  int length = msg.getDataLength(0);
-  char str[length];
-  msg.getString(0,str,length);
-  
-  mcp.digitalWrite(3, (strcmp("up", str) == 0) ? HIGH : LOW); // UP
-  mcp.digitalWrite(1, (strcmp("down", str) == 0) ? HIGH : LOW); // Down
+void receiveCallUp(OSCMessage &msg, int addrOffset){
+  mcp.digitalWrite(3, HIGH); // UP
+  mcp.digitalWrite(1, LOW); // Down
+}
+
+void receiveCallDown(OSCMessage &msg, int addrOffset){
+  mcp.digitalWrite(3, LOW); // UP
+  mcp.digitalWrite(1, HIGH); // Down
+}
+
+void receiveCallNone(OSCMessage &msg, int addrOffset){
+  mcp.digitalWrite(3, LOW); // UP
+  mcp.digitalWrite(1, LOW); // Down
 }
 
 void receiveDoorOpen(OSCMessage &msg, int addrOffset){
-  int length = msg.getDataLength(0);
-  char str[length];
-  msg.getString(0,str,length);
-  if (strcmp("up", str) == 0) {
-    mcp.digitalWrite(3, LOW); // UP
-  } else if (strcmp("down", str) == 0) {
-    mcp.digitalWrite(1, LOW); // Down
-  }
-          
+  // Clear call acceptance lights
+  mcp.digitalWrite(3, LOW); // UP
+  mcp.digitalWrite(1, LOW); // Down
   doorOpenReceived = true;
 }
 
 void sendCallUp() {
-  OSCMessage msgOut("/call/up");
-  sendControllerOSCMessage(msgOut);
+  sendControllerOSCMessage("/call/up");
 }
 
 void sendCallDown() {
-  OSCMessage msgOut("/call/down");
-  sendControllerOSCMessage(msgOut);
+  sendControllerOSCMessage("/call/down");
 }
 
-void sendControllerOSCMessage(OSCMessage &msg) {
-  char buffer [32];
-  msg.getAddress(buffer);
+void sendControllerOSCMessage(const char* address) {
   oled.print(F("send: "));
-  oled.println(buffer);
-  
+  oled.println(address);
+
+  OSCMessage msg(address);
   Udp.beginPacket(controllerIp, controllerPort);
   msg.send(Udp);
   Udp.endPacket();
