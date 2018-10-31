@@ -1,5 +1,5 @@
-//#define FRONT_DOOR 1
-#define REAR_DOOR 1
+#define FRONT_DOOR 1
+//#define REAR_DOOR 1
 
 #include <ESP8266WiFi.h> // WIFI support
 #include <ESP8266mDNS.h> // For network discovery
@@ -7,12 +7,8 @@
 #include <ArduinoOTA.h> // Updates over the air
 
 // Communication
-#include <ESP8266WebServer.h> // Support for REST API
+#include <ESP8266WebServer.h>
 #include <ESP8266HTTPClient.h> 
-
-// OSC
-#include <OSCMessage.h> // for sending OSC messages
-#include <OSCBundle.h> // for receiving OSC messages
 
 // I2C
 #include <Wire.h>
@@ -73,10 +69,11 @@ volatile int encoderCount = 0; //This variable will increase or decrease dependi
 int lastEncoderPosition = 0;
 
 bool doorOpenReceived = false;
+int lastUpButtonState = HIGH;
+int lastDownButtonState = HIGH;
 
 /* Display */
 SSD1306AsciiWire oled;
-uint8_t rowHeight; // pixels per row.
 
 /* WIFI */
 char hostname[21] = {0};
@@ -84,10 +81,7 @@ char hostname[21] = {0};
 /* Web Server */
 ESP8266WebServer server(80);
 
-/* OSC */
-WiFiUDP Udp;
-OSCErrorCode error;
-
+/* Communications */
 String controllerHostname;
 IPAddress controllerIp;
 unsigned int controllerPort;
@@ -116,7 +110,6 @@ void setup() {
   oled.setFont(System5x7);
   oled.setScrollMode(SCROLL_MODE_AUTO);
   oled.clear();
-  rowHeight = oled.fontRows();
 
   /* Function Select */
   oled.println(ESP_NAME);
@@ -141,14 +134,9 @@ void setup() {
   //}
   // Serial.println();
 
-  /* UDP */
-  Udp.begin(OSC_PORT);
-
   oled.println(WiFi.macAddress());
   oled.println(hostname);
   oled.print(WiFi.localIP());
-  oled.print(F(":"));
-  oled.println(Udp.localPort());
 
   /* OTA */
   ArduinoOTA.setHostname(hostname);
@@ -208,11 +196,12 @@ void setup() {
   oled.println(controllerPort);
 
   /* Web Server */
+  server.on("/", HTTP_GET, handleRoot);
   server.on("/call/up", HTTP_GET, handleCallUp);
   server.on("/call/down", HTTP_GET, handleCallDown);
   server.on("/call/none", HTTP_GET, handleCallNone);
   server.on("/door/open", HTTP_GET, handleDoorOpen);
-  server.on("/", HTTP_GET, handleRoot);
+  server.on("/restart", HTTP_GET, handleRestart);
   server.onNotFound(handleNotFound);
   server.begin();
   oled.println(F("HTTP server started"));
@@ -305,14 +294,22 @@ void setup() {
 void loop() {
   ArduinoOTA.handle();
   server.handleClient();
-  receiveOSC();
 
   // Read buttons
-  if (mcp.digitalRead(0) == LOW) { // Down Button
-    requestController("/call/down");
+  int downButtonState = mcp.digitalRead(0);
+  if (downButtonState != lastDownButtonState) {
+    if (downButtonState == LOW) { // Down Button
+      requestController("/call/down");
+    }
+    lastDownButtonState = downButtonState;
   }
-  if (mcp.digitalRead(2) == LOW) { // Up Button
-    requestController("/call/up");
+  
+  int upButtonState = mcp.digitalRead(2);
+  if (upButtonState != lastUpButtonState) {
+    if (upButtonState == LOW) { // Up Button
+      requestController("/call/up");
+    }
+    lastUpButtonState = upButtonState;
   }
   
   // Get range and position info
@@ -401,10 +398,6 @@ void loop() {
     oled.println(DoorStateString[(int)doorState]);
   }
   
-  // Door Dwell 1 is the time, in seconds, that the doors will wait until closing if the passenger detection beam across the door entrance is not broken.
-  // Door Dwell 2 is the time, in seconds, that the doors will wait until closing after the broken passenger detection beams are cleared.
-  // Door Dwell 1 is automatically set to 3 seconds, and Door Dwell 2 to 2 seconds when you are using Standard mode
-
   lastDoorState = doorState;
   lastEncoderPosition = encoderPosition;
   tic.resetCommandTimeout();
@@ -612,51 +605,10 @@ void ai0() {
   }
 }
 
-void receiveOSC(){
-  OSCMessage msg;
-  int size;
-  if((size = Udp.parsePacket())>0){
-    while(size--)
-      msg.fill(Udp.read());
-    if(!msg.hasError()){
-      char buffer [32];
-      msg.getAddress(buffer);
-      oled.print(F("recv: "));
-      oled.println(buffer);
-      
-      msg.route("/call/acceptance",receiveCallAcceptance);
-      msg.route("/door/open",receiveDoorOpen);
-    } else {
-      error = msg.getError();
-      oled.print(F("recv error: "));
-      oled.println(error);
-    }
-  }
-}
-
-void receiveCallAcceptance(OSCMessage &msg, int addrOffset){
-  int length = msg.getDataLength(0);
-  char str[length];
-  msg.getString(0,str,length);
-  
-  mcp.digitalWrite(3, (strcmp("up", str) == 0) ? HIGH : LOW); // UP
-  mcp.digitalWrite(1, (strcmp("down", str) == 0) ? HIGH : LOW); // Down
-}
-
-void receiveDoorOpen(OSCMessage &msg, int addrOffset){
-  int length = msg.getDataLength(0);
-  char str[length];
-  msg.getString(0,str,length);
-  if (strcmp("up", str) == 0) {
-    mcp.digitalWrite(3, LOW); // UP
-  } else if (strcmp("down", str) == 0) {
-    mcp.digitalWrite(1, LOW); // Down
-  }
-          
-  doorOpenReceived = true;
-}
-
 void returnOK() {
+  oled.print(F("recv: "));
+  oled.println(server.uri());
+  
   server.send(200, "text/plain", "OK");
 }
 
@@ -664,8 +616,13 @@ void handleNotFound() {
   server.send(404, "text/plain", "Not Found");
 }
 
+void handleRestart() {
+  ESP.restart();
+  returnOK();
+}
+
 void handleRoot() {
-  server.send(200, "text/plain", "Hello world");
+  server.send(200, "text/plain", hostname);
 }
 
 void handleCallUp() {

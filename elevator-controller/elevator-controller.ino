@@ -56,6 +56,7 @@ int endFloor = 1;
 
 bool frontDoorClosed = false;
 bool rearDoorClosed = false;
+int lastReopenButtonState = HIGH;
 
 /* Display */
 SSD1306AsciiWire oled;
@@ -68,8 +69,8 @@ ESP8266WebServer server(80);
 
 /* OSC */
 WiFiUDP Udp;
-OSCErrorCode error;
 
+/* Communications */
 String frontDoorHostname;
 IPAddress frontDoorIp;
 unsigned int frontDoorPort;
@@ -88,6 +89,7 @@ Adafruit_MCP23017 mcp1;
 
 void setup()
 {
+  /* Serial and I2C */
   Serial.begin(74880);
   Wire.begin(D2, D1); // join i2c bus with SDA=D1 and SCL=D2 of NodeMCU
 
@@ -118,15 +120,10 @@ void setup()
   //  delay(500);
   //  oled.print(".");
   //}
-
-  /* UDP */
-  Udp.begin(OSC_PORT);
   
   oled.println(WiFi.macAddress());
   oled.println(hostname);
   oled.print(WiFi.localIP());
-  oled.print(F(":"));
-  oled.println(Udp.localPort());
 
   /* OTA */
   ArduinoOTA.setHostname(hostname);
@@ -219,6 +216,7 @@ void setup()
   server.on("/call/up", HTTP_GET, handleCallUp);
   server.on("/call/down", HTTP_GET, handleCallDown);
   server.on("/door/closed", HTTP_GET, handleDoorClosed);
+  server.on("/restart", HTTP_GET, handleRestart);
   server.on("/", HTTP_GET, handleRoot);
   server.onNotFound(handleNotFound);
   server.begin();
@@ -297,10 +295,14 @@ void loop() {
 
   ArduinoOTA.handle();
   server.handleClient();
-  receiveOSC();
 
-  // Read buttons
-  boolean reopenPressed = (mcp1.digitalRead(3) == LOW); // Reopen
+  // Reopen
+  boolean reopen = false;
+  int reopenButtonState = mcp1.digitalRead(3);
+  if (reopenButtonState != lastReopenButtonState) {
+    reopen = (reopenButtonState == LOW);
+    lastReopenButtonState = reopenButtonState;
+  }
 
   if (elevatorState == ElevatorState::Stopped) {
     if (currentFloor == 0) {
@@ -313,7 +315,7 @@ void loop() {
         endTime = currentTime + 22000;
       } 
       else if (doorState == DoorState::Open) {
-        if (reopenPressed == true) {
+        if (reopen == true) {
           openRearDoor();
         }
       }
@@ -347,7 +349,7 @@ void loop() {
         }
       }
       else if (doorState == DoorState::Open) {
-        if (reopenPressed == true || callState != CallState::None) {
+        if (reopen == true || callState != CallState::None) {
           openFrontDoor();
         }
       }
@@ -363,7 +365,7 @@ void loop() {
         endTime = currentTime + 4000;
       }
       else if (doorState == DoorState::Open) {
-        if (reopenPressed == true) {
+        if (reopen == true) {
           openRearDoor();
         }
       }
@@ -403,47 +405,20 @@ void loop() {
   updateFloorIndicator();
 }
 
-void receiveOSC(){
-  OSCMessage msg;
-  int size;
-  if((size = Udp.parsePacket()) > 0){
-    while(size--)
-      msg.fill(Udp.read());
-    if(!msg.hasError()){
-      char buffer [32];
-      msg.getAddress(buffer);
-      oled.print(F("recv: "));
-      oled.println(buffer);
-      
-      msg.route("/call/up",receiveCallUp);
-      msg.route("/call/down",receiveCallDown);
-      msg.route("/door/closed",receiveDoorClosed);
-    } else {
-      error = msg.getError();
-      oled.print(F("recv error: "));
-      oled.println(error);
-    }
-  }
-}
-
-void receiveCallUp(OSCMessage &msg, int addrOffset){
-  callState = CallState::Up;
-}
-
-void receiveCallDown(OSCMessage &msg, int addrOffset){
-  callState = CallState::Down;
-}
-
-void receiveDoorClosed(OSCMessage &msg, int addrOffset){
-  doorState = DoorState::Closed;
-}
-
 void returnOK() {
+  oled.print(F("recv: "));
+  oled.println(server.uri());
+  
   server.send(200, "text/plain", "OK");
 }
 
 void handleNotFound() {
   server.send(404, "text/plain", "Not Found");
+}
+
+void handleRestart() {
+  ESP.restart();
+  returnOK();
 }
 
 void handleRoot() {
