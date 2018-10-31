@@ -1,5 +1,5 @@
-#define FRONT_DOOR 1
-//#define REAR_DOOR 1
+//#define FRONT_DOOR 1
+#define REAR_DOOR 1
 
 #include <ESP8266WiFi.h> // WIFI support
 #include <ESP8266mDNS.h> // For network discovery
@@ -382,9 +382,19 @@ void loop() {
   // Send door state once every [interval].  This adds reliability.
   if (millis() > oscSendTime) {
     if (doorState == DoorState::Closed) {
-      sendControllerOSCMessage(strcat("/door/closed/", DOOR_NAME));
+#ifdef FRONT_DOOR
+      sendControllerOSCMessage("/door/closed/front");
+#endif
+#ifdef REAR_DOOR
+      sendControllerOSCMessage("/door/closed/rear");
+#endif
     } else {
-      sendControllerOSCMessage(strcat("/door/open/", DOOR_NAME));
+#ifdef FRONT_DOOR
+      sendControllerOSCMessage("/door/open/front");
+#endif
+#ifdef REAR_DOOR
+      sendControllerOSCMessage("/door/open/rear");
+#endif
     }
     oscSendTime = millis() + OSC_MESSAGE_SEND_INTERVAL;
   }
