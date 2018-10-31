@@ -298,7 +298,7 @@ void loop() {
         oled.println(F("Return to 1st floor"));
         elevatorState = ElevatorState::Moving;
         startTime = currentTime;
-        endTime = currentTime + 22000;
+        endTime = currentTime + 16000; // 22000
       } 
       else if (rearDoorState == DoorState::Open) {
         if (reopenPressed == true) {
@@ -320,7 +320,7 @@ void loop() {
           sendQLabOSCMessage("/cue/elevator.frontdoorclose/start");
           elevatorState = ElevatorState::Moving;
           startTime = currentTime;
-          endTime = currentTime + 26000;
+          endTime = currentTime + 23000; // 26000
           startFloor = 1;
         } else if (callState == CallState::Up) {
           sendQLabOSCMessage("/cue/elevator.openfrontdoorup/start");
@@ -348,7 +348,7 @@ void loop() {
         oled.println(F("Return to 1st floor"));
         elevatorState = ElevatorState::Moving;
         startTime = currentTime;
-        endTime = currentTime + 4000;
+        endTime = currentTime + 1000; // 4000
       }
       else if (rearDoorState == DoorState::Open) {
         if (reopenPressed == true) {
@@ -505,6 +505,21 @@ void sendQLabOSCMessage(const char* address) {
   oled.println(address);
 
   OSCMessage msg(address);
+  Udp.beginPacket(qLabIp, qLabPort);
+  msg.send(Udp);
+  Udp.endPacket();
+  msg.empty();
+
+  // Send message three times to ensure delivery.  Need to come up with a better approach.
+  delay(100);
+
+  Udp.beginPacket(qLabIp, qLabPort);
+  msg.send(Udp);
+  Udp.endPacket();
+  msg.empty();
+
+  delay(100);
+
   Udp.beginPacket(qLabIp, qLabPort);
   msg.send(Udp);
   Udp.endPacket();
